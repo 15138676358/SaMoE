@@ -1,6 +1,13 @@
 """
 analyze.py
 This module provides functions to analyze MoE model characteristics.
+It includes:
+1. Saving and loading models with training information.
+2. Extracting expert weights for given contexts.
+3. Analyzing expert activation heatmaps.
+4. Analyzing noise resistance of the model.
+5. Visualizing results with heatmaps and line plots.
+6. Running a full analysis pipeline that combines all analyses and visualizations.
 """
 
 import torch
