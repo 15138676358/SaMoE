@@ -31,13 +31,14 @@ class End2EndModel(nn.Module):
         output = self.output_decoder(combined)
         
         return output
-    
-class MoEModel(nn.Module):
+
+class MoEModel_Imp(nn.Module):
     """
     Mixture of Experts (MoE) model that processes context, input, and output_gt.
+    The gate mechanism is implicit bayesian.
     """
     def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
-        super(MoEModel, self).__init__()
+        super(MoEModel_Imp, self).__init__()
         self.experts = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(input_size, hidden_size),
@@ -45,11 +46,33 @@ class MoEModel(nn.Module):
                 nn.Linear(hidden_size, output_size)
             ) for _ in range(num_experts)
         ])
-        # self.gate = nn.Sequential(
-        #     nn.Linear(context_size, num_experts),
-        #     nn.ReLU(),
-        #     nn.Linear(num_experts, num_experts)
-        # )
+        self.gate = nn.Sequential(
+            nn.Linear(context_size, num_experts),
+            nn.ReLU(),
+            nn.Linear(num_experts, num_experts)
+        )   
+    
+    def forward(self, context, input):
+        gate_output = F.softmax(self.gate(context), dim=1)
+        expert_outputs = [expert(input) for expert in self.experts]
+        combined_output = sum(gate_output[:, i:i+1] * expert_outputs[i] for i in range(len(self.experts)))
+
+        return combined_output
+
+class MoEModel_Exp(nn.Module):
+    """
+    Mixture of Experts (MoE) model that processes context, input, and output_gt.
+    The gate mechanism is explicit bayesian.
+    """
+    def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
+        super(MoEModel_Exp, self).__init__()
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, output_size)
+            ) for _ in range(num_experts)
+        ])
 
     def forward(self, context, input):
         num_experts = len(self.experts)
