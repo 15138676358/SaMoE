@@ -11,50 +11,12 @@ It includes:
 """
 
 import matplotlib.pyplot as plt
-from models import End2EndModel, MoEModel_Exp, MoEModel_Imp
+from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel
 import numpy as np
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import torch
 
-
-def get_expert_weights(model, context_tensor):
-    """
-    Extract expert weights from MoE model for given context.
-    
-    Args:
-        model: Trained MoE model
-        context_tensor: Context tensor of shape (B, 8)
-        
-    Returns:
-        torch.Tensor: Expert weights of shape (B, num_experts)
-    """
-    model.eval()
-    with torch.no_grad():
-        if isinstance(model, MoEModel_Exp):
-            # Explicit Bayesian gate mechanism
-            num_experts = len(model.experts)
-            context_x, context_y = context_tensor[:, 0::2], context_tensor[:, 1::2]
-            flattened_context_x = context_x.view(-1, 1)
-            flattened_context_y = context_y.view(-1, 1)
-            
-            expert_predictions = torch.stack([expert(flattened_context_x) for expert in model.experts], dim=0)
-            flattened_context_y_expanded = flattened_context_y.unsqueeze(0).expand(num_experts, -1, 1)
-            error_context_y = (expert_predictions - flattened_context_y_expanded).view(num_experts, -1, 4).transpose(0, 1)
-            error_context = torch.sum(torch.pow(error_context_y, 2), dim=2)
-            weights_context = torch.softmax(-error_context, dim=1)
-
-        elif isinstance(model, MoEModel_Imp):
-            # Implicit Bayesian gate mechanism
-            gate_output = torch.softmax(model.gate(context_tensor), dim=1)
-            weights_context = gate_output
-        
-        elif isinstance(model, End2EndModel):
-            # End-to-end model does not have experts, return uniform weights
-            num_experts = 1
-            weights_context = torch.ones(context_tensor.size(0), num_experts) / num_experts
-        
-    return weights_context
 
 def analyze_expert_weights(model, mu_range=(0, 1), num_mu_points=100, num_samples_per_mu=10):
     """
@@ -86,7 +48,8 @@ def analyze_expert_weights(model, mu_range=(0, 1), num_mu_points=100, num_sample
             context = np.column_stack((X[:4], y[:4])).reshape(-1)
             context_tensor = torch.FloatTensor(context).unsqueeze(0)
 
-            weights = get_expert_weights(model, context_tensor).squeeze(0)
+            with torch.no_grad():
+                weights = model._get_expert_weights(context_tensor).squeeze(0)
             mu_weights.append(weights.numpy())
         
         # Average activations across samples for this mu
@@ -193,13 +156,13 @@ def visualize_predictions(predictions, ground_truth, save_path=None):
 
 def main():
     # Example usage
-    model_path = "trained_model_exp.pth"
-    model_args = (10, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
+    model_path = "trained_model_sam.pth"
+    model_args = (17, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
     
-    model = MoEModel_Exp(*model_args)
+    model = SaMoEModel(*model_args)
     model.load_state_dict(torch.load(model_path))
     
     mu_range = (0, 1)

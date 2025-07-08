@@ -8,7 +8,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from data_generator import generate_synthetic_data
-from models import End2EndModel, MoEModel_Exp, MoEModel_Imp
+from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel, SaMoEModel_Ab1
 import numpy as np
 
 def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer):
@@ -82,6 +82,15 @@ def train(model, train_data, test_data, batch_size=32, num_epochs=100, learning_
         train_loss, test_loss = train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer)
         print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}')
 
+        if isinstance(model, SaMoEModel):
+            current_num_experts = len(model.experts)
+            model.evolve_experts(threshold=0.2 * epoch / num_epochs)
+
+            # 检查是否需要更新optimizer
+            if len(model.experts) != current_num_experts:
+                optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+                print(f"Optimizer updated: {current_num_experts} -> {len(model.experts)} experts")
+
 def main():
     # load dataset from .npz file
     data = np.load('train_data.npz')
@@ -93,14 +102,17 @@ def main():
     
     # Initialize model
     # model = End2EndModel(context_size=8, hidden_size=32, output_size=1)
-    model = MoEModel_Exp(num_experts=10, context_size=8, input_size=1, hidden_size=32, output_size=1)
-    # model = MoEModel_Imp(num_experts=10, context_size=8, input_size=1, hidden_size=32, output_size=1)
+    # model = MoEModel_Exp(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
+    # model = MoEModel_Imp(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
+    # model = SaMoEModel(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
+    model = SaMoEModel_Ab1(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
+
     
     # Train the model
     train(model, train_data, test_data, batch_size=16, num_epochs=100, learning_rate=0.001)
 
     # Save the trained model
-    torch.save(model.state_dict(), 'trained_model_e2e.pth')
+    torch.save(model.state_dict(), 'trained_model_sam_ab1.pth')
 
 if __name__ == "__main__":
     main()

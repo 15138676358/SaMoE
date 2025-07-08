@@ -2,11 +2,13 @@
 models.py
 This module defines the structure of two models: The MoEModel and the End2EndModel.
 """
-
+from abc import ABC, abstractmethod
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing_extensions import override
 
 class End2EndModel(nn.Module):
     """
@@ -32,13 +34,13 @@ class End2EndModel(nn.Module):
         
         return output
 
-class MoEModel_Imp(nn.Module):
+class MoEModel(nn.Module):
     """
     Mixture of Experts (MoE) model that processes context, input, and output_gt.
     The gate mechanism is implicit bayesian.
     """
     def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
-        super(MoEModel_Imp, self).__init__()
+        super(MoEModel, self).__init__()
         self.experts = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(input_size, hidden_size),
@@ -46,35 +48,59 @@ class MoEModel_Imp(nn.Module):
                 nn.Linear(hidden_size, output_size)
             ) for _ in range(num_experts)
         ])
+
+    @abstractmethod
+    def _get_expert_weights(self, context):
+        """
+        Get the weights for each expert based on the context.
+        This method should be implemented in subclasses.
+        """
+        raise NotImplementedError("Subclasses should implement this method.")
+    
+    def forward(self, context, input):
+        expert_weights = self._get_expert_weights(context)
+        expert_outputs = torch.stack([expert(input) for expert in self.experts], dim=1)
+        combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
+
+        return combined_output
+
+class MoEModel_Imp(MoEModel):
+    """
+    Mixture of Experts (MoE) model that processes context, input, and output_gt.
+    The gate mechanism is implicit gate neural network.
+    """
+    @override
+    def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
+        super(MoEModel_Imp, self).__init__(num_experts=num_experts, context_size=context_size, input_size=input_size, hidden_size=hidden_size, output_size=output_size)
+
         self.gate = nn.Sequential(
             nn.Linear(context_size, num_experts),
             nn.ReLU(),
             nn.Linear(num_experts, num_experts)
         )   
     
-    def forward(self, context, input):
-        gate_output = F.softmax(self.gate(context), dim=1)
-        expert_outputs = [expert(input) for expert in self.experts]
-        combined_output = sum(gate_output[:, i:i+1] * expert_outputs[i] for i in range(len(self.experts)))
+    @override
+    def _get_expert_weights(self, context):
+        """
+        Get the weights for each expert based on the context.
+        This method uses a softmax function to compute the weights.
+        """
+        gate_output = self.gate(context)
+        expert_weights = F.softmax(gate_output, dim=1)
+        
+        return expert_weights
 
-        return combined_output
-
-class MoEModel_Exp(nn.Module):
+class MoEModel_Exp(MoEModel):
     """
     Mixture of Experts (MoE) model that processes context, input, and output_gt.
     The gate mechanism is explicit bayesian.
     """
-    def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
-        super(MoEModel_Exp, self).__init__()
-        self.experts = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(input_size, hidden_size),
-                nn.ReLU(),
-                nn.Linear(hidden_size, output_size)
-            ) for _ in range(num_experts)
-        ])
-
-    def forward(self, context, input):
+    @override
+    def _get_expert_weights(self, context):
+        """
+        Get the weights for each expert based on the context.
+        This method uses a softmax function to compute the weights.
+        """
         num_experts = len(self.experts)
         # context dimension is (B, 4, 2), separate into (B, 4) and (B, 4)
         context_x, context_y = context[:, 0::2], context[:, 1::2]  # (B, 4), (B, 4)
@@ -83,35 +109,93 @@ class MoEModel_Exp(nn.Module):
         # Use torch.stack instead of torch.tensor to preserve gradients
         expert_predictions = torch.stack([expert(flattened_context_x) for expert in self.experts], dim=0)  # (num_experts, B*4, 1)
         flattened_context_y_expanded = flattened_context_y.unsqueeze(0).expand(num_experts, -1, 1)  # (num_experts, B*4, 1)
-        error_context_y = (expert_predictions - flattened_context_y_expanded).view(num_experts, -1, 4).transpose(0, 1)  # (B, num_experts, 4)
+        expert_errors_y = (expert_predictions - flattened_context_y_expanded).view(num_experts, -1, 4).transpose(0, 1)  # (B, num_experts, 4)
         
-        error_context = torch.sum(torch.pow(error_context_y, 2), dim=2)  # (B, num_experts)
-        weights_context = F.softmax(-error_context, dim=1)  # (B, num_experts)
-        
-        # Also fix the expert outputs calculation
-        expert_outputs = torch.stack([expert(input) for expert in self.experts], dim=1)  # (B, num_experts, output_size)
-        combined_output = torch.sum(weights_context.unsqueeze(2) * expert_outputs, dim=1)  # (B, output_size)
-        
-        return combined_output
-    
-class SaMoEModel(nn.Module):
-    """
-    Scalable Mixture of Experts (SaMoE) model that processes context, input, and output_gt.
-    """
-    def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
-        super(SaMoEModel, self).__init__()
-        self.experts = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(input_size, hidden_size),
-                nn.ReLU(),
-                nn.Linear(hidden_size, output_size)
-            ) for _ in range(num_experts)
-        ])
-        self.gate = nn.Linear(context_size, num_experts)
+        expert_errors = torch.sum(torch.pow(expert_errors_y, 2), dim=2)  # (B, num_experts)
+        expert_weights = F.softmax(-expert_errors, dim=1)  # (B, num_experts)
 
+        return expert_weights
+
+    
+class SaMoEModel(MoEModel_Exp):
+    """
+    SaMoE model that extends MoEModel_Exp with expert frequency filter.
+    """
+    @override
+    def __init__(self, num_experts=4, context_size=8, input_size=1, hidden_size=32, output_size=1):
+        super(SaMoEModel, self).__init__(num_experts=num_experts, context_size=context_size, input_size=input_size, hidden_size=hidden_size, output_size=output_size)
+
+        self.expert_trace = torch.ones(num_experts)  # Initialize with 1 to avoid division by zero
+
+    @override
     def forward(self, context, input):
-        gate_output = F.softmax(self.gate(context), dim=1)
-        expert_outputs = [expert(input) for expert in self.experts]
-        combined_output = sum(gate_output[:, i] * expert_outputs[i] for i in range(len(self.experts)))
+        expert_weights = self._get_expert_weights(context)
+        expert_outputs = torch.stack([expert(input) for expert in self.experts], dim=1)
+        combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
+        
+        # Update expert trace based on the frequency of activation
+        with torch.no_grad():
+            self.expert_trace = self.expert_trace + torch.sum(expert_weights, dim=0)
         
         return combined_output
+
+    def evolve_experts(self, threshold=0.1):
+        """
+        Evolve experts based on their frequency of activation.
+        This method can be called periodically to update the experts.
+        """
+        # Step 1: Prune
+        expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
+        remove_mask = expert_priority < threshold
+        remove_indices = torch.where(remove_mask)[0].tolist()
+        print(f"Current expert frequencies: {expert_priority.detach()}")
+        print(f"Experts to remove (freq < {threshold:.4f}): {remove_indices}")
+        
+        if len(remove_indices) > 0:
+            # Remove experts with low frequency
+            for idx in sorted(remove_indices, reverse=True):
+                del self.experts[idx]
+            self.expert_trace = self.expert_trace[~remove_mask]
+        
+        # Step 2: Add
+        expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
+        add_mask = expert_priority > 0.3 / max(threshold, 0.001)  # The 1 / threshold
+        add_indices = torch.where(add_mask)[0].tolist()
+        print(f"Experts to add (freq > {(0.3 / max(threshold, 0.001)):.4f}): {add_indices}")
+        
+        if len(add_indices) > 0:
+            for idx in sorted(add_indices, reverse=True):
+                new_expert = copy.deepcopy(self.experts[idx])
+                with torch.no_grad():  # add small noise to the new expert
+                    for param in new_expert.parameters():
+                        noise = torch.randn_like(param) * 0.01
+                        param.add_(noise)
+                self.experts.append(new_expert)
+                self.expert_trace[idx] /= 2
+                self.expert_trace = torch.cat([self.expert_trace, torch.ones(1) * self.expert_trace[idx]])
+        
+        expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
+        print(f"Updated expert frequencies: {expert_priority.detach()}")
+
+class SaMoEModel_Ab1(SaMoEModel):
+    """
+    SaMoE model with a different expert weights calculation method.
+    The weight is weight / trace to make the trace more equalized.
+    """
+    @override
+    def forward(self, context, input):
+        trace_weights = self.expert_trace.unsqueeze(0)
+        expert_weights = self._get_expert_weights(context)
+        expert_weights = expert_weights / torch.sqrt(trace_weights)
+        # Ensure expert_weights is not zero to avoid division by zero
+        expert_weights = F.softmax(expert_weights, dim=1)
+        expert_outputs = torch.stack([expert(input) for expert in self.experts], dim=1)
+        combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
+        
+        # Update expert trace based on the frequency of activation
+        with torch.no_grad():
+            self.expert_trace = self.expert_trace + torch.sum(expert_weights, dim=0)
+        
+        return combined_output
+
+        
