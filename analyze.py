@@ -98,6 +98,26 @@ def analyze_expert_weights(model, mu_range=(0, 1), num_mu_points=100, num_sample
     
     return mean_weights_heatmap, std_weights_heatmap
 
+def analyze_expert_outputs(model, input_range=(0, 1), num_input_points=100):
+    """
+    分析专家输出：输入作为y轴，专家作为x轴，输出用颜色表示
+    Args:
+        model: Trained MoE model
+        input_range: Range of input values (min, max)
+        num_input_points: Number of input points to sample
+    Returns:
+        dict: Analysis results containing heatmap data
+    """
+    print("Analyzing expert outputs heatmap...")
+    
+    model.eval()
+    input_values = np.linspace(input_range[0], input_range[1], num_input_points)
+    input_tensor = torch.FloatTensor(input_values).unsqueeze(1)  # Shape: (num_input_points, 1)
+    with torch.no_grad():
+        expert_outputs_heatmap = [expert(input_tensor).squeeze(-1) for expert in model.experts]  # List of tensors from each expert
+    
+    return np.array(expert_outputs_heatmap).transpose(1, 0)
+
 def analyze_predictions(model, mu_range=(0, 1), num_mu_points=100, num_samples_per_mu=10):
     """
     分析模型预测结果：真值为x轴，预测值为y轴
@@ -111,6 +131,7 @@ def analyze_predictions(model, mu_range=(0, 1), num_mu_points=100, num_samples_p
     """
     print("Analyzing model predictions...")
     
+    model.eval()
     mu_values = np.linspace(mu_range[0], mu_range[1], num_mu_points)
     predictions, ground_truth = [], []
     
@@ -124,7 +145,8 @@ def analyze_predictions(model, mu_range=(0, 1), num_mu_points=100, num_samples_p
             input_data = torch.FloatTensor(X[4:]).unsqueeze(0)
             context_tensor = torch.FloatTensor(context).unsqueeze(0)
 
-            output = model(context_tensor, input_data).squeeze().item()
+            with torch.no_grad():
+                output = model(context_tensor, input_data).squeeze().item()
             predictions.append(output)
             ground_truth.append(y[4])
     
@@ -171,13 +193,13 @@ def visualize_predictions(predictions, ground_truth, save_path=None):
 
 def main():
     # Example usage
-    model_path = "trained_model_imp.pth"
+    model_path = "trained_model_exp.pth"
     model_args = (10, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
     
-    model = MoEModel_Imp(*model_args)
+    model = MoEModel_Exp(*model_args)
     model.load_state_dict(torch.load(model_path))
     
     mu_range = (0, 1)
@@ -185,10 +207,12 @@ def main():
     num_samples_per_mu = 10
     
     mean_weights_heatmap, std_weights_heatmap = analyze_expert_weights(model, mu_range, num_mu_points, num_samples_per_mu)
+    expert_outputs_heatmap = analyze_expert_outputs(model, input_range=(0, 1), num_input_points=100)
     predictions, ground_truth = analyze_predictions(model, mu_range, num_mu_points, num_samples_per_mu)
     
     visualize_heatmap(mean_weights_heatmap, save_path="mean_weights_heatmap.png")
     visualize_heatmap(std_weights_heatmap, save_path="std_weights_heatmap.png")
+    visualize_heatmap(expert_outputs_heatmap, save_path="expert_outputs_heatmap.png")
     visualize_predictions(predictions, ground_truth, save_path="predictions_vs_ground_truth.png")
 
 
