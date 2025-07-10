@@ -11,7 +11,7 @@ It includes:
 """
 
 import matplotlib.pyplot as plt
-from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel
+from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel, SaMoEModel_Ab1, SaMoEModel_Ab2
 import numpy as np
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -47,9 +47,13 @@ def analyze_expert_weights(model, mu_range=(0, 1), num_mu_points=100, num_sample
             y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((X - mu) / sigma) ** 2)
             context = np.column_stack((X[:4], y[:4])).reshape(-1)
             context_tensor = torch.FloatTensor(context).unsqueeze(0)
+            input_tensor = torch.FloatTensor(X[4:]).unsqueeze(0)
 
             with torch.no_grad():
-                weights = model._get_expert_weights(context_tensor).squeeze(0)
+                if isinstance(model, SaMoEModel_Ab2):
+                    weights = model._get_expert_weights(context_tensor, input_tensor).squeeze(0)
+                else:
+                    weights = model._get_expert_weights(context_tensor).squeeze(0)
             mu_weights.append(weights.numpy())
         
         # Average activations across samples for this mu
@@ -156,13 +160,13 @@ def visualize_predictions(predictions, ground_truth, save_path=None):
 
 def main():
     # Example usage
-    model_path = "trained_model_sam.pth"
-    model_args = (17, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
+    model_path = "trained_model_sam_ab1.pth"
+    model_args = (22, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
     
-    model = SaMoEModel(*model_args)
+    model = SaMoEModel_Ab2(*model_args)
     model.load_state_dict(torch.load(model_path))
     
     mu_range = (0, 1)

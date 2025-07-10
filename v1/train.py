@@ -8,7 +8,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from data_generator import generate_synthetic_data
-from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel, SaMoEModel_Ab1
+from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel, SaMoEModel_Ab1, SaMoEModel_Ab2
 import numpy as np
 
 def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer):
@@ -105,7 +105,7 @@ def main():
     # model = MoEModel_Exp(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
     # model = MoEModel_Imp(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
     # model = SaMoEModel(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
-    model = SaMoEModel_Ab1(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
+    model = SaMoEModel_Ab2(num_experts=32, context_size=8, input_size=1, hidden_size=32, output_size=1)
 
     
     # Train the model
