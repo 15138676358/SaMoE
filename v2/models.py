@@ -127,24 +127,24 @@ class ContextExpert(nn.Module):
         
         Args:
             context: Dict containing:
-                - 'img': (batch_size, seq_len, 3, 352, 352)
-                - 'loc': (batch_size, seq_len, 2)
-                - 'done': (batch_size, seq_len) - boolean values
+                - 'imgs': (batch_size, seq_len, 3, 352, 352)
+                - 'locs': (batch_size, seq_len, 2)
+                - 'dones': (batch_size, seq_len) - boolean values
                 
         Returns:
             output: (batch_size, hidden_size)
         """
-        img = context['img']    # (batch_size, seq_len, 3, 352, 352)
-        loc = context['loc']    # (batch_size, seq_len, 2)
-        done = context['done']  # (batch_size, seq_len)
-        batch_size, seq_len = img.shape[0], img.shape[1]
+        imgs = context['imgs']    # (batch_size, seq_len, 3, 352, 352)
+        locs = context['locs']    # (batch_size, seq_len, 2)
+        dones = context['dones']  # (batch_size, seq_len)
+        batch_size, seq_len = imgs.shape[0], imgs.shape[1]
         # 重塑图像数据用于批量处理
-        img_reshaped = img.view(batch_size * seq_len, 3, 352, 352)
+        img_reshaped = imgs.view(batch_size * seq_len, 3, 352, 352)
         img_features = self.img_module(img_reshaped)  # (batch_size * seq_len, hidden_size)
         img_features = img_features.view(batch_size, seq_len, self.hidden_size)
-        loc_features = self.loc_embedding(loc.float())  # (batch_size, seq_len, hidden_size//4)
-        done_int = done.long()  # (batch_size, seq_len)
-        done_features = self.done_embedding(done_int)  # (batch_size, seq_len, hidden_size//4)
+        loc_features = self.loc_embedding(locs.float())  # (batch_size, seq_len, hidden_size//4)
+        done_int = dones.long()  # (batch_size, seq_len, 1)
+        done_features = self.done_embedding(done_int.squeeze(-1))  # (batch_size, seq_len, hidden_size//4)
         combined_features = torch.cat([img_features, loc_features, done_features], dim=-1)
         fused_features = self.feature_fusion(combined_features)  # (batch_size, seq_len, hidden_size)
         seq_features = fused_features + self.positional_encoding[:seq_len].unsqueeze(0)
@@ -186,7 +186,7 @@ class End2EndModel(nn.Module):
             nn.ReLU()
         )  # In this module, the input outputs hidden_size instead of 1
         gate = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()  # Ensure output is in the range [0, 1]
@@ -231,7 +231,7 @@ class MoEModel_Imp(MoEModel):
             nn.ReLU()
         )  # In this module, the input outputs hidden_size instead of 1
         gate = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, num_experts),
             nn.Softmax(dim=-1)

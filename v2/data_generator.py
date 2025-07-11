@@ -4,121 +4,89 @@ import random
 from PIL import Image
 import numpy as np
 
+
 def load_image(image_path):
     """Load and return image as numpy array"""
     try:
         img = Image.open(image_path)
-        return np.array(img)
+        img = np.transpose(np.array(img), (2, 0, 1))  # from (H, W, C) to (C, H, W)
+        return img
     except Exception as e:
         print(f"Error loading image {image_path}: {e}")
         return None
 
-def load_json_data(json_path):
-    """Load JSON data and extract required fields"""
-    try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-        return {
-            'loc': data.get('grasp_wrt_crop'),
-            'done': data.get('grasp_success')
-        }
-    except Exception as e:
-        print(f"Error loading JSON {json_path}: {e}")
-        return None
-
-def generate_context_data(subdirectory, num_context=4):
-    """Generate context data by randomly selecting images from subdirectory"""
-    context_data = []
-    
-    # Get all attempt files in subdirectory
-    attempt_files = []
-    for file in os.listdir(subdirectory):
-        if file.startswith('attempt_') and file.endswith('_rgb.png'):
-            attempt_num = file.split('_')[1]
-            attempt_files.append(attempt_num)
-    
-    # Randomly select context attempts
-    selected_attempts = random.sample(attempt_files, min(num_context, len(attempt_files)))
-    
-    for attempt_num in selected_attempts:
-        img_path = os.path.join(subdirectory, f'attempt_{attempt_num}_rgb.png')
-        json_path = os.path.join(subdirectory, f'attempt_{attempt_num}.json')
-        
-        img = load_image(img_path)
-        json_data = load_json_data(json_path)
-        
-        if img is not None and json_data is not None:
-            context_data.append({
-                'img': img,
-                'loc': json_data['loc'],
-                'done': json_data['done']
-            })
-    
-    return context_data
-
-def generate_data_for_subdirectory(subdirectory):
+def generate_data_for_subdirectory(subdirectory, num_context=4):
     """Generate complete data structure for a subdirectory"""
-    all_data = []
+    json_path = os.path.join(subdirectory, f'attempts.json')
+    json_data = json.load(open(json_path)) if os.path.exists(json_path) else None
+    if json_data is None:
+        print(f"JSON data not found in {subdirectory}")
+        return []
+    
+    input = {'object': [], 'img': [], 'loc': []}
+    context = {'imgs': [], 'locs': [], 'dones': []}
+    output = {'done': []}
     
     # Get all attempt files
-    attempt_files = []
+    attempt_idx = []
     for file in os.listdir(subdirectory):
         if file.startswith('attempt_') and file.endswith('_rgb.png'):
-            attempt_num = file.split('_')[1]
-            attempt_files.append(attempt_num)
+            attempt_id = file.split('_')[1]
+            attempt_idx.append(attempt_id)
     
-    for attempt_num in attempt_files:
+    for attempt_id in attempt_idx:
         # Generate context data (4 random images from same subdirectory)
-        context = generate_context_data(subdirectory, num_context=4)
+        input_id = attempt_id
+        context_idx = random.sample(attempt_idx, num_context)
         
-        # Load input data
-        input_img_path = os.path.join(subdirectory, f'attempt_{attempt_num}_rgb.png')
-        input_json_path = os.path.join(subdirectory, f'attempt_{attempt_num}.json')
-        
-        input_img = load_image(input_img_path)
-        input_json_data = load_json_data(input_json_path)
-        
-        if input_img is not None and input_json_data is not None:
-            data_entry = {
-                'context': context,
-                'input': {
-                    'img': input_img,
-                    'loc': input_json_data['loc']
-                },
-                'done': input_json_data['done']
-            }
-            all_data.append(data_entry)
+        input['object'].append(subdirectory.split('/')[-1])
+        input['img'].append(load_image(os.path.join(subdirectory, f'attempt_{input_id}_rgb.png')))
+        input['loc'].append(json_data['attempt_' + input_id]['grasp_wrt_crop'])
+        output['done'].append([json_data['attempt_' + input_id]['grasp_success']])
+
+        context['imgs'].append([load_image(os.path.join(subdirectory, f'attempt_{id}_rgb.png')) for id in context_idx])
+        context['locs'].append([json_data['attempt_' + id]['grasp_wrt_crop'] for id in context_idx])
+        context['dones'].append([[json_data['attempt_' + id]['grasp_success']] for id in context_idx])
     
-    return all_data
+    return input, context, output
 
 def generate_dataset():
     """Generate dataset from all subdirectories in dataset folder"""
     dataset_dir = './v2/dataset'
-    all_dataset = []
-    
     if not os.path.exists(dataset_dir):
         print(f"Dataset directory '{dataset_dir}' not found!")
         return []
+    all_input, all_context, all_output = {'object': [], 'img': [], 'loc': []}, {'imgs': [], 'locs': [], 'dones': []}, {'done': []}
     
     # Process each subdirectory
     for subdir in os.listdir(dataset_dir):
         subdir_path = os.path.join(dataset_dir, subdir)
         if os.path.isdir(subdir_path):
             print(f"Processing subdirectory: {subdir}")
-            subdir_data = generate_data_for_subdirectory(subdir_path)
-            all_dataset.extend(subdir_data)
+            input, context, output = generate_data_for_subdirectory(subdir_path)
+            all_input['object'].extend(input['object'])
+            all_input['img'].extend(input['img'])
+            all_input['loc'].extend(input['loc'])
+            all_context['imgs'].extend(context['imgs'])
+            all_context['locs'].extend(context['locs'])
+            all_context['dones'].extend(context['dones'])
+            all_output['done'].extend(output['done'])
     
-    return all_dataset
+    return all_input, all_context, all_output
 
 if __name__ == "__main__":
     # Generate the complete dataset
-    dataset = generate_dataset()
-    print(f"Generated dataset with {len(dataset)} entries")
+    input, context, output = generate_dataset()
+    # 将数据转换为nparray,保存为npz
+    np.savez_compressed(
+        'v2/dataset.npz', 
+        input_img=np.array(input['img']),
+        input_loc=np.array(input['loc']),
+        context_imgs=np.array(context['imgs']),
+        context_locs=np.array(context['locs']),
+        context_dones=np.array(context['dones']),
+        output_done=np.array(output['done'])
+    )
+
+    print(f"Generated dataset with {len(output['done'])} entries")
     
-    # Example: Print structure of first entry
-    if dataset:
-        print("\nExample data structure:")
-        print(f"Context length: {len(dataset[0]['context'])}")
-        print(f"Input image shape: {dataset[0]['input']['img'].shape}")
-        print(f"Input location: {dataset[0]['input']['loc']}")
-        print(f"Done status: {dataset[0]['done']}")

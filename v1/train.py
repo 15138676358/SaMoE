@@ -93,7 +93,7 @@ def train(model, train_data, test_data, batch_size=32, num_epochs=100, learning_
 
 def main():
     # load dataset from .npz file
-    data = np.load('train_data.npz')
+    data = np.load('dataset.npz')
     context, input, output_gt = torch.tensor(data['context']), torch.tensor(data['input']), torch.tensor(data['output_gt'])
     train_data = (context, input, output_gt)
     data = np.load('test_data.npz')
