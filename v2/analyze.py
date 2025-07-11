@@ -1,0 +1,177 @@
+"""
+The expert weights can be analyzed by inputting data from the same object name.
+The expert outputs can be analyzed by travering through the (x, y) pixel space.
+The model predictions can be analyzed by inputting test dataset.
+The expert outputs and weights can be visualized as heatmaps.
+The model predictions can be visualized as a scatter plot.
+"""
+
+import matplotlib.pyplot as plt
+from models import End2EndModel, MoEModel_Exp, MoEModel_Imp
+import numpy as np
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+import torch
+
+
+def analyze_expert_weights(model, mu_range=(0, 1), num_mu_points=100, num_samples_per_mu=10):
+    """
+    分析专家激活情况：mu作为x轴，专家作为y轴，激活值用颜色表示
+    
+    Args:
+        model: Trained MoE model
+        mu_range: Range of mu values (min, max)
+        num_mu_points: Number of mu points to sample
+        sigma_fixed: Fixed sigma value for analysis
+        num_samples_per_mu: Number of samples to generate for each mu value
+        
+    Returns:
+        dict: Analysis results containing heatmap data
+    """
+    print("Analyzing expert activation heatmap...")
+    
+    mu_values = np.linspace(mu_range[0], mu_range[1], num_mu_points)
+    mean_weights_heatmap, std_weights_heatmap = [], []
+    
+    for mu in mu_values:
+        sigma = np.random.uniform(0.2, 0.8)
+        mu_weights = []
+        
+        for _ in range(num_samples_per_mu):
+            # Generate synthetic data with fixed mu and sigma
+            X = np.random.uniform(0, 1, 5)
+            y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((X - mu) / sigma) ** 2)
+            context = np.column_stack((X[:4], y[:4])).reshape(-1)
+            context_tensor = torch.FloatTensor(context).unsqueeze(0)
+            input_tensor = torch.FloatTensor(X[4:]).unsqueeze(0)
+
+            with torch.no_grad():
+                if isinstance(model, SaMoEModel_Ab2):
+                    weights = model._get_expert_weights(context_tensor, input_tensor).squeeze(0)
+                else:
+                    weights = model._get_expert_weights(context_tensor).squeeze(0)
+            mu_weights.append(weights.numpy())
+        
+        # Average activations across samples for this mu
+        mu_weights = np.array(mu_weights)  # Shape: (num_samples_per_mu, num_experts)
+        mean_weights_heatmap.append(np.mean(mu_weights, axis=0))
+        std_weights_heatmap.append(np.std(mu_weights, axis=0))
+        
+    mean_weights_heatmap, std_weights_heatmap = np.array(mean_weights_heatmap), np.array(std_weights_heatmap)
+    
+    return mean_weights_heatmap, std_weights_heatmap
+
+def analyze_expert_outputs(model):
+    """
+    分析专家输出，在0-1范围采样352*352图像作为输入，生成专家输出热力图
+    """
+    print("Analyzing expert outputs heatmap...")
+    
+    model.eval()
+    input_x, input_y = np.linspace(0, 1, 352), np.linspace(0, 1, 352)
+    expert_outputs_heatmap = []
+    
+    
+    return np.array(expert_outputs_heatmap).transpose(1, 0)
+
+def analyze_predictions(model, mu_range=(0, 1), num_mu_points=100, num_samples_per_mu=10):
+    """
+    分析模型预测结果：真值为x轴，预测值为y轴
+    Args:
+        model: Trained MoE model
+        mu_range: Range of mu values (min, max)
+        num_mu_points: Number of mu points to sample
+        num_samples_per_mu: Number of samples to generate for each mu value
+    Returns:
+        prediction, ground_truth
+    """
+    print("Analyzing model predictions...")
+    
+    model.eval()
+    mu_values = np.linspace(mu_range[0], mu_range[1], num_mu_points)
+    predictions, ground_truth = [], []
+    
+    for mu in mu_values:
+        sigma = np.random.uniform(0.2, 0.8)
+        for _ in range(num_samples_per_mu):
+            # Generate synthetic data with fixed mu and sigma
+            X = np.random.uniform(0, 1, 5)
+            y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((X - mu) / sigma) ** 2)
+            context = np.column_stack((X[:4], y[:4])).reshape(-1)
+            input_data = torch.FloatTensor(X[4:]).unsqueeze(0)
+            context_tensor = torch.FloatTensor(context).unsqueeze(0)
+
+            with torch.no_grad():
+                output = model(context_tensor, input_data).squeeze().item()
+            predictions.append(output)
+            ground_truth.append(y[4])
+    
+    return np.array(predictions), np.array(ground_truth)
+
+def visualize_heatmap(heatmap, save_path=None):
+    """
+    可视化专家激活热力图
+    
+    Args:
+        heatmap: Results from analyze_expert_weights
+        save_path: Path to save the figure
+    """
+    
+    plt.figure(figsize=(12, 8))
+    plt.imshow(heatmap, aspect='auto', cmap='viridis', origin='lower')
+    plt.colorbar(label='Expert Activation')
+    plt.xlabel('Experts')
+    plt.ylabel('Mu Values')
+    plt.title('Expert Activation Heatmap')
+    plt.xticks(ticks=np.arange(heatmap.shape[1]), labels=[f'Expert {i+1}' for i in range(heatmap.shape[1])])
+    plt.yticks(ticks=np.arange(0, heatmap.shape[0], 10), labels=[f'Mu {i+1}' for i in range(0, heatmap.shape[0], 10)])
+    if save_path:
+        plt.savefig(save_path)
+
+def visualize_predictions(predictions, ground_truth, save_path=None):
+    """
+    可视化模型预测结果
+    
+    Args:
+        predictions: Model predictions
+        ground_truth: Ground truth values
+        save_path: Path to save the figure
+    """
+    
+    plt.figure(figsize=(10, 6))
+    plt.scatter(ground_truth, predictions, alpha=0.5)
+    plt.plot([min(ground_truth), max(ground_truth)], [min(ground_truth), max(ground_truth)], color='red', linestyle='--')
+    plt.xlabel('Ground Truth')
+    plt.ylabel('Predictions')
+    plt.title('Model Predictions vs Ground Truth')
+    if save_path:
+        plt.savefig(save_path)
+
+def main():
+    # Example usage
+    model_path = "trained_model_sam_ab1.pth"
+    model_args = (22, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
+    
+    model = SaMoEModel_Ab2(*model_args)
+    model.load_state_dict(torch.load(model_path))
+    
+    mu_range = (0, 1)
+    num_mu_points = 100
+    num_samples_per_mu = 10
+    
+    mean_weights_heatmap, std_weights_heatmap = analyze_expert_weights(model, mu_range, num_mu_points, num_samples_per_mu)
+    expert_outputs_heatmap = analyze_expert_outputs(model, input_range=(0, 1), num_input_points=100)
+    predictions, ground_truth = analyze_predictions(model, mu_range, num_mu_points, num_samples_per_mu)
+    
+    visualize_heatmap(mean_weights_heatmap, save_path="mean_weights_heatmap.png")
+    visualize_heatmap(std_weights_heatmap, save_path="std_weights_heatmap.png")
+    visualize_heatmap(expert_outputs_heatmap, save_path="expert_outputs_heatmap.png")
+    visualize_predictions(predictions, ground_truth, save_path="predictions_vs_ground_truth.png")
+
+
+
+if __name__ == "__main__":
+    main()

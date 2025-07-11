@@ -3,7 +3,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from models import End2EndModel, MoEModel_Exp, MoEModel_Imp
 import numpy as np
+np.random.seed(42)  # For reproducibility
 from tqdm import tqdm
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer):
     """
@@ -19,11 +21,11 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
     train_loss, test_loss = 0.0, 0.0
     
     for input_img, input_loc, context_imgs, context_locs, context_dones, output_done in train_data_loader:
-        context = {'imgs': context_imgs.float(), 
-                   'locs': context_locs.float(), 
-                   'dones': context_dones.float()}
-        input = {'img': input_img.float(), 'loc': input_loc.float()}
-        output_done = output_done.float()
+        context = {'imgs': context_imgs.float().to(device) / 255.0,  # Normalize images to [0, 1]
+                   'locs': context_locs.float().to(device), 
+                   'dones': context_dones.float().to(device)}
+        input = {'img': input_img.float().to(device) / 255.0, 'loc': input_loc.float().to(device)}
+        output_done = output_done.float().to(device)
 
         optimizer.zero_grad()
         output_pred = model(context, input)
@@ -36,11 +38,11 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
     model.eval()
     with torch.no_grad():
         for input_img, input_loc, context_imgs, context_locs, context_dones, output_done in test_data_loader:
-            context = {'imgs': context_imgs.float(), 
-                       'locs': context_locs.float(), 
-                       'dones': context_dones.float()}
-            input = {'img': input_img.float(), 'loc': input_loc.float()}
-            output_done = output_done.float()
+            context = {'imgs': context_imgs.float().to(device) / 255.0, 
+                       'locs': context_locs.float().to(device), 
+                       'dones': context_dones.float().to(device)}
+            input = {'img': input_img.float().to(device) / 255.0, 'loc': input_loc.float().to(device)}
+            output_done = output_done.float().to(device)
             
             output_pred = model(context, input)
             loss = criterion(output_pred, output_done)
@@ -59,6 +61,7 @@ def train(model, train_data, test_data, batch_size=32, num_epochs=100, learning_
         num_epochs (int): Number of epochs to train the model.
         learning_rate (float): Learning rate for the optimizer.
     """
+    model.to(device)
     input_img, input_loc, context_imgs, context_locs, context_dones, output_done = train_data
     train_dataset = TensorDataset(input_img, input_loc, context_imgs, context_locs, context_dones, output_done)
     train_data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -67,7 +70,7 @@ def train(model, train_data, test_data, batch_size=32, num_epochs=100, learning_
     test_data_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False)
     
     criterion = torch.nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     
     for epoch in tqdm(range(num_epochs), desc="Training Epochs"):
         train_loss, test_loss = train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer)
@@ -96,22 +99,25 @@ def main():
     # Split data into training and testing sets
     train_size = int(0.8 * len(output_done))
     test_size = len(output_done) - train_size
-    train_data = (input_img[:train_size], input_loc[:train_size],
-                  context_imgs[:train_size], context_locs[:train_size],
-                  context_dones[:train_size], output_done[:train_size])
-    test_data = (input_img[train_size:], input_loc[train_size:],
-                 context_imgs[train_size:], context_locs[train_size:],
-                 context_dones[train_size:], output_done[train_size:])
+    train_idx = np.random.choice(len(output_done), train_size, replace=False)
+    test_idx = np.setdiff1d(np.arange(len(output_done)), train_idx)
+    train_data = (input_img[train_idx], input_loc[train_idx],
+                  context_imgs[train_idx], context_locs[train_idx],
+                  context_dones[train_idx], output_done[train_idx])
+    test_data = (input_img[test_idx], input_loc[test_idx],
+                 context_imgs[test_idx], context_locs[test_idx],
+                 context_dones[test_idx], output_done[test_idx])
     print(f"Training on {len(train_data[0])} samples, Testing on {len(test_data[0])} samples")
     
     # Train the model
-    # model = End2EndModel()  # or MoEModel_Exp() or MoEModel_Imp()
-    model = MoEModel_Exp(num_experts=16)  # Uncomment if using SaMoEModel
+    # model = End2EndModel(hidden_size=64)
+    model = MoEModel_Exp(num_experts=16, hidden_size=16)
     print("Model initialized")
-    train(model, train_data, test_data, batch_size=32, num_epochs=25, learning_rate=0.001)
+    
+    train(model, train_data, test_data, batch_size=8, num_epochs=100, learning_rate=0.001)
 
     # Save the trained model
-    torch.save(model.state_dict(), 'model.pth')
+    torch.save(model.state_dict(), 'v2/model.pth')
     print("Model saved to 'model.pth'")
 
 if __name__ == "__main__":

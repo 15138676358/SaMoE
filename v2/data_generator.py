@@ -9,6 +9,7 @@ def load_image(image_path):
     """Load and return image as numpy array"""
     try:
         img = Image.open(image_path)
+        img = img.resize((88, 88), Image.Resampling.LANCZOS)  # Resize to 88x88
         img = np.transpose(np.array(img), (2, 0, 1))  # from (H, W, C) to (C, H, W)
         return img
     except Exception as e:
@@ -41,11 +42,11 @@ def generate_data_for_subdirectory(subdirectory, num_context=4):
         
         input['object'].append(subdirectory.split('/')[-1])
         input['img'].append(load_image(os.path.join(subdirectory, f'attempt_{input_id}_rgb.png')))
-        input['loc'].append(json_data['attempt_' + input_id]['grasp_wrt_crop'])
+        input['loc'].append([loc / 352.0 for loc in json_data['attempt_' + input_id]['grasp_wrt_crop']])  # Normalize to [0, 1]
         output['done'].append([json_data['attempt_' + input_id]['grasp_success']])
 
         context['imgs'].append([load_image(os.path.join(subdirectory, f'attempt_{id}_rgb.png')) for id in context_idx])
-        context['locs'].append([json_data['attempt_' + id]['grasp_wrt_crop'] for id in context_idx])
+        context['locs'].append([[loc / 352.0 for loc in json_data['attempt_' + id]['grasp_wrt_crop']] for id in context_idx])  # Normalize to [0, 1]
         context['dones'].append([[json_data['attempt_' + id]['grasp_success']] for id in context_idx])
     
     return input, context, output

@@ -15,14 +15,14 @@ from typing_extensions import override
 class ImgModule(nn.Module):
     """
     A CNN module for processing images.
-    - input: torch.FloatTensor(batch_size, 352, 352, 3) representing the image
+    - input: torch.FloatTensor(batch_size, 88, 88, 3) representing the image
     - output: torch.FloatTensor(batch_size, hidden_size) representing the processed image features
     """
     def __init__(self, hidden_size=32):
         super(ImgModule, self).__init__()
         self.model = nn.Sequential(
-            # 352x352x3 -> 88x88x8
-            nn.Conv2d(3, 8, kernel_size=7, stride=4, padding=3),  # stride=4大幅降维
+            # 88x88x3 -> 44x44x8
+            nn.Conv2d(3, 8, kernel_size=5, stride=1, padding=2),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),  # 88 -> 44
 
@@ -51,25 +51,37 @@ class InputExpert(nn.Module):
     """
     Expert network that processes input data and produces an output.
     - input: Dict{
-                img: torch.FloatTensor(batch_size, 352, 352, 3) representing the image
+                img: torch.FloatTensor(batch_size, 88, 88, 3) representing the image
                 loc: torch.FloatTensor(batch_size, 2) representing the grasping location. "grasp_wrt_crop" in the json file.
     - output: torch.FloatTensor(batch_size, 1)
     """
     def __init__(self, hidden_size=32):
         super(InputExpert, self).__init__()
         self.img_module = ImgModule(hidden_size)
+        self.loc_module = nn.Sequential(
+            nn.Linear(2, hidden_size // 4),  # 2D location to hidden_size // 4
+            nn.ReLU(),
+            nn.Linear(hidden_size // 4, hidden_size)  # hidden_size // 4 to hidden_size
+        )
         # MLP
         self.decode_module = nn.Sequential(
-            nn.Linear(hidden_size + 2, hidden_size),
+            nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()
         )
+        # Xavier initialization
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Conv2d):            
+                nn.init.xavier_uniform_(m.weight)
     
     def forward(self, input):
         img, loc = input['img'], input['loc']
         img_features = self.img_module(img)  # (batch_size, hidden_size)
-        combined_features = torch.cat([img_features, loc], dim=1)
+        loc_features = self.loc_module(loc)  # (batch_size, hidden_size)
+        combined_features = torch.cat([img_features, loc_features], dim=1)
         output = self.decode_module(combined_features)
         
         return output
@@ -121,25 +133,32 @@ class ContextExpert(nn.Module):
                 nn.Linear(hidden_size // 2, 1)
             )
 
+        # Xavier initialization
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Conv2d):            
+                nn.init.xavier_uniform_(m.weight)
+
     def forward(self, context):
         """
         Forward pass for context processing.
         
         Args:
             context: Dict containing:
-                - 'imgs': (batch_size, seq_len, 3, 352, 352)
+                - 'imgs': (batch_size, seq_len, 3, 88, 88)
                 - 'locs': (batch_size, seq_len, 2)
                 - 'dones': (batch_size, seq_len) - boolean values
                 
         Returns:
             output: (batch_size, hidden_size)
         """
-        imgs = context['imgs']    # (batch_size, seq_len, 3, 352, 352)
+        imgs = context['imgs']    # (batch_size, seq_len, 3, 88, 88)
         locs = context['locs']    # (batch_size, seq_len, 2)
         dones = context['dones']  # (batch_size, seq_len)
         batch_size, seq_len = imgs.shape[0], imgs.shape[1]
         # 重塑图像数据用于批量处理
-        img_reshaped = imgs.view(batch_size * seq_len, 3, 352, 352)
+        img_reshaped = imgs.view(batch_size * seq_len, 3, 88, 88)
         img_features = self.img_module(img_reshaped)  # (batch_size * seq_len, hidden_size)
         img_features = img_features.view(batch_size, seq_len, self.hidden_size)
         loc_features = self.loc_embedding(locs.float())  # (batch_size, seq_len, hidden_size//4)
@@ -182,7 +201,7 @@ class End2EndModel(nn.Module):
         context = ContextExpert(hidden_size=hidden_size)
         input = InputExpert(hidden_size=hidden_size)
         input.decode_module = nn.Sequential(
-            nn.Linear(hidden_size + 2, hidden_size),
+            nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU()
         )  # In this module, the input outputs hidden_size instead of 1
         gate = nn.Sequential(
@@ -192,6 +211,13 @@ class End2EndModel(nn.Module):
             nn.Sigmoid()  # Ensure output is in the range [0, 1]
         )
         self.model = nn.ModuleDict({'context': context, 'input': input, 'gate': gate})
+
+        # Xavier initialization
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Conv2d):            
+                nn.init.xavier_uniform_(m.weight)
 
     def forward(self, context, input):
         context_features = self.model['context'](context)
@@ -227,7 +253,7 @@ class MoEModel_Imp(MoEModel):
         context = ContextExpert(hidden_size=hidden_size)
         input = InputExpert(hidden_size=hidden_size)
         input.decode_module = nn.Sequential(
-            nn.Linear(hidden_size + 2, hidden_size),
+            nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU()
         )  # In this module, the input outputs hidden_size instead of 1
         gate = nn.Sequential(
@@ -237,6 +263,13 @@ class MoEModel_Imp(MoEModel):
             nn.Softmax(dim=-1)
         )
         self.expert_weights_gate = nn.ModuleDict({'context': context, 'input': input, 'gate': gate})
+
+        # Xavier initialization
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Conv2d):            
+                nn.init.xavier_uniform_(m.weight)
 
     @override
     def get_expert_weights(self, context, input):
@@ -253,10 +286,18 @@ class MoEModel_Exp(MoEModel):
         super(MoEModel_Exp, self).__init__(num_experts, hidden_size)
         self.prior_weights_gate = InputExpert(hidden_size=hidden_size)
         self.prior_weights_gate.decode_module = nn.Sequential(
-            nn.Linear(hidden_size + 2, num_experts),
+            nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
+            nn.Linear(hidden_size, num_experts),
             nn.Softmax(dim=-1)
         )  # In this module, the input outputs num_experts instead of 1
+
+        # Xavier initialization
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Conv2d):            
+                nn.init.xavier_uniform_(m.weight)
     
     @override
     def get_expert_weights(self, context, input):
