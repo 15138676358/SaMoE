@@ -261,10 +261,11 @@ class MoEModel_Exp(MoEModel):
     @override
     def get_expert_weights(self, context, input):
         num_experts = len(self.experts)
-        img, loc, done = context['img'], context['loc'], context['done']
-        batch_size, seq_len = img.shape[0], img.shape[1]
-        img, loc, done = img.view(batch_size * seq_len, -1, -1, -1), loc.view(batch_size * seq_len, -1), done.view(batch_size * seq_len, -1)
-        context_input, context_output = {'img': img, 'loc': loc}, done
+        imgs, locs, dones = context['imgs'], context['locs'], context['dones']
+        batch_size, seq_len = imgs.shape[0], imgs.shape[1]
+        C, H, W = imgs.shape[2], imgs.shape[3], imgs.shape[4]
+        imgs, locs, dones = imgs.view(batch_size * seq_len, C, H, W), locs.view(batch_size * seq_len, -1), dones.view(batch_size * seq_len, -1)
+        context_input, context_output = {'img': imgs, 'loc': locs}, dones
 
         expert_predictions = torch.stack([expert(context_input) for expert in self.experts], dim=0)  # (num_experts, batch_size * seq_len, 1)
         context_output = context_output.unsqueeze(0).expand(num_experts, -1, 1)  # (num_experts, batch_size * seq_len, 1)

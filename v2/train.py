@@ -105,10 +105,10 @@ def main():
     print(f"Training on {len(train_data[0])} samples, Testing on {len(test_data[0])} samples")
     
     # Train the model
-    model = End2EndModel()  # or MoEModel_Exp() or MoEModel_Imp()
-    # model = SaMoEModel()  # Uncomment if using SaMoEModel
+    # model = End2EndModel()  # or MoEModel_Exp() or MoEModel_Imp()
+    model = MoEModel_Exp(num_experts=16)  # Uncomment if using SaMoEModel
     print("Model initialized")
-    train(model, train_data, test_data, batch_size=32, num_epochs=100, learning_rate=0.001)
+    train(model, train_data, test_data, batch_size=32, num_epochs=25, learning_rate=0.001)
 
     # Save the trained model
     torch.save(model.state_dict(), 'model.pth')
