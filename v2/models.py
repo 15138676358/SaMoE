@@ -236,7 +236,7 @@ class End2EndModel(nn.Module):
         combined_features = torch.cat([context_features, input_features], dim=1)
         output = self.model['gate'](combined_features)
 
-        return output
+        return None, output
     
 class MoEModel(nn.Module):
     """
@@ -274,7 +274,7 @@ class MoEModel(nn.Module):
         expert_outputs = torch.stack([expert(input_features) for expert in self.experts], dim=1)  # (batch_size, num_experts, output_size)
         combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
 
-        return expert_outputs, combined_output
+        return expert_weights, expert_outputs
     
 class MoEModel_Imp(MoEModel):
     @override
@@ -365,13 +365,13 @@ class SaMoEModel(MoEModel_Exp):
 
     @override
     def forward(self, context, input):
-        expert_weights = self.get_expert_weights(context, input)
-        expert_output, combined_output = super().forward(context, input)
+        # expert_weights = self.get_expert_weights(context, input)
+        expert_weights, expert_outputs = super().forward(context, input)
         # Update expert trace based on the frequency of activation
         with torch.no_grad():
             self.expert_trace = self.expert_trace + torch.sum(expert_weights, dim=0)
         
-        return expert_weights, combined_output
+        return expert_weights, expert_outputs
     
     def evolve_experts(self, threshold=0.1):
         """

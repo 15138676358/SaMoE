@@ -76,7 +76,7 @@ def analyze_expert_outputs(model, input_img=np.zeros((3, 88, 88))):
     print("Analyzing expert outputs heatmap...")
     input_img = torch.tensor(input_img).float()  # (C, H, W)
     img_gray = input_img.mean(axis=0)  # (H, W)
-    mask = img_gray > -64  # (H, W)
+    mask = img_gray > 64  # (H, W)
     input_locs = torch.nonzero(mask, as_tuple=False).to(device)  # (N, 2), 每行是(y, x)
     input_imgs = input_img.unsqueeze(0).expand(len(input_locs), -1, -1, -1).to(device)  # (N, C, H, W)
     input = {'img': input_imgs.float() / 255.0, 'loc': input_locs.float() / 88.0}
@@ -131,7 +131,7 @@ def analyze_expert_predictions(model, data):
 def main():
     # Example usage
     model_path = "v2/model_sam.pth"
-    model_args = (4,16)  # num_experts, hidden_size
+    model_args = (16,16)  # num_experts, hidden_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
@@ -141,7 +141,7 @@ def main():
     model.eval()
     
     image_path = 'v2/dataset/t_shape-08231207/attempt_0_rgb.png'
-    image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
+    # image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
     img = data_generator.load_image(image_path)
     analyze_expert_outputs(model, img)
 

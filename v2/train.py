@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel
@@ -28,15 +29,21 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
         output_done = output_done.float().to(device)
 
         optimizer.zero_grad()
-        expert_weights, output_pred = model(context, input)
-        # expert_weights_entropy = torch.sum(expert_weights * torch.log(expert_weights + 1e-8), dim=1).mean()  # Add small value to avoid log(0)
-        outputs_sorted, _ = torch.sort(expert_weights)
-        gaps = outputs_sorted[1:] - outputs_sorted[:-1]
-        expert_weights_entropy = torch.std(gaps)
-        loss = criterion(output_pred, output_done) + 1 * expert_weights_entropy  # Add entropy regularization
+        expert_weights, expert_outputs = model(context, input)
+        combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
+        
+        outputs_sorted, _ = torch.sort(expert_outputs, dim=1)
+        gaps = outputs_sorted[:, 1:] - outputs_sorted[:, :-1]
+        expert_entropy = torch.std(gaps, dim=1).mean()  # Regularization term for expert entropy
+
+        expert_errors = torch.pow(expert_outputs - output_done.unsqueeze(1).repeat(1, len(model.experts), 1), 2)  # (batch_size, num_experts)
+        expert_errors = F.softmax(-expert_errors, dim=1).squeeze(-1)
+        expert_consistency = torch.sum(torch.pow(expert_weights - expert_errors, 2), dim=1).mean()  # Regularization term for expert consistency
+
+        loss = criterion(combined_output, output_done) + 0.3 * expert_entropy + 0.3 * expert_consistency  # Add entropy regularization
         loss.backward()
         optimizer.step()
-        train_loss += loss.item()
+        train_loss += criterion(combined_output, output_done).item()
     
     # Evaluate on test data
     model.eval()
@@ -48,8 +55,9 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
             input = {'img': input_img.float().to(device) / 255.0, 'loc': input_loc.float().to(device)}
             output_done = output_done.float().to(device)
             
-            _, output_pred = model(context, input)
-            loss = criterion(output_pred, output_done)
+            expert_weights, expert_outputs = model(context, input)
+            combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
+            loss = criterion(combined_output, output_done)
             test_loss += loss.item()
     
     return train_loss / len(train_data_loader), test_loss / len(test_data_loader)
@@ -69,7 +77,7 @@ def train(model, train_dataset, test_dataset, batch_size=32, num_epochs=100, lea
     train_data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_data_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False)
     
-    criterion = torch.nn.MSELoss()
+    criterion = torch.nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     for epoch in tqdm(range(num_epochs), desc="Training Epochs"):
@@ -88,7 +96,7 @@ def train(model, train_dataset, test_dataset, batch_size=32, num_epochs=100, lea
 def main():
     # Load dataset from .npz file
     print("Loading dataset...")
-    data = np.load('v2/train_dataset.npz')
+    data = np.load('v2/dataset.npz')
     input_img = torch.tensor(data['input_img'])
     input_loc = torch.tensor(data['input_loc'])
     context_imgs = torch.tensor(data['context_imgs'])
@@ -96,21 +104,21 @@ def main():
     context_dones = torch.tensor(data['context_dones'])
     output_done = torch.tensor(data['output_done'])
 
-    train_dataset = TensorDataset(input_img, input_loc, context_imgs, context_locs, context_dones, output_done)
-    # train_dataset, test_dataset = torch.utils.data.random_split(dataset, [int(0.8 * len(dataset)), len(dataset) - int(0.8 * len(dataset))])
+    dataset = TensorDataset(input_img, input_loc, context_imgs, context_locs, context_dones, output_done)
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [int(0.8 * len(dataset)), len(dataset) - int(0.8 * len(dataset))])
 
-    data = np.load('v2/test_dataset.npz')
-    input_img = torch.tensor(data['input_img'])
-    input_loc = torch.tensor(data['input_loc'])
-    context_imgs = torch.tensor(data['context_imgs'])
-    context_locs = torch.tensor(data['context_locs'])
-    context_dones = torch.tensor(data['context_dones'])
-    output_done = torch.tensor(data['output_done'])
+    # data = np.load('v2/test_dataset.npz')
+    # input_img = torch.tensor(data['input_img'])
+    # input_loc = torch.tensor(data['input_loc'])
+    # context_imgs = torch.tensor(data['context_imgs'])
+    # context_locs = torch.tensor(data['context_locs'])
+    # context_dones = torch.tensor(data['context_dones'])
+    # output_done = torch.tensor(data['output_done'])
 
-    test_dataset = TensorDataset(input_img, input_loc, context_imgs, context_locs, context_dones, output_done)
+    # test_dataset = TensorDataset(input_img, input_loc, context_imgs, context_locs, context_dones, output_done)
     
     # Train the model
-    # model = End2EndModel(hidden_size=16)
+    # model = End2EndModel(hidden_size=32)
     # model = MoEModel_Exp(num_experts=16, hidden_size=16)
     model = SaMoEModel(num_experts=16, hidden_size=16)
     print("Model initialized.")
