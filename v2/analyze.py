@@ -5,171 +5,151 @@ The model predictions can be analyzed by inputting test dataset.
 The expert outputs and weights can be visualized as heatmaps.
 The model predictions can be visualized as a scatter plot.
 """
-
+import data_generator
 import matplotlib.pyplot as plt
-from models import End2EndModel, MoEModel_Exp, MoEModel_Imp
+from models import End2EndModel, MoEModel_Exp, MoEModel_Imp, SaMoEModel
 import numpy as np
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+from PIL import Image
 import torch
+from torch.utils.data import DataLoader, TensorDataset
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
 
 
-def analyze_expert_weights(model, mu_range=(0, 1), num_mu_points=100, num_samples_per_mu=10):
+def analyze_expert_weights(model, object_idx, data):
     """
-    分析专家激活情况：mu作为x轴，专家作为y轴，激活值用颜色表示
-    
-    Args:
-        model: Trained MoE model
-        mu_range: Range of mu values (min, max)
-        num_mu_points: Number of mu points to sample
-        sigma_fixed: Fixed sigma value for analysis
-        num_samples_per_mu: Number of samples to generate for each mu value
-        
-    Returns:
-        dict: Analysis results containing heatmap data
+    分析专家激活情况：object作为x轴，专家作为y轴，激活值用颜色表示
     """
     print("Analyzing expert activation heatmap...")
     
-    mu_values = np.linspace(mu_range[0], mu_range[1], num_mu_points)
     mean_weights_heatmap, std_weights_heatmap = [], []
-    
-    for mu in mu_values:
-        sigma = np.random.uniform(0.2, 0.8)
-        mu_weights = []
-        
-        for _ in range(num_samples_per_mu):
-            # Generate synthetic data with fixed mu and sigma
-            X = np.random.uniform(0, 1, 5)
-            y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((X - mu) / sigma) ** 2)
-            context = np.column_stack((X[:4], y[:4])).reshape(-1)
-            context_tensor = torch.FloatTensor(context).unsqueeze(0)
-            input_tensor = torch.FloatTensor(X[4:]).unsqueeze(0)
 
-            with torch.no_grad():
-                if isinstance(model, SaMoEModel_Ab2):
-                    weights = model._get_expert_weights(context_tensor, input_tensor).squeeze(0)
-                else:
-                    weights = model._get_expert_weights(context_tensor).squeeze(0)
-            mu_weights.append(weights.numpy())
+    for object_id in tqdm(object_idx, desc="Analyzing objects"):
+        subset_idx = [i for i, obj in enumerate(data['object']) if obj == object_id]
+        context = {'imgs': torch.tensor(data['context_imgs'][subset_idx]).float().to(device) / 255.0, 
+                   'locs': torch.tensor(data['context_locs'][subset_idx]).float().to(device),
+                   'dones': torch.tensor(data['context_dones'][subset_idx]).float().to(device)}
+        input = {'img': torch.tensor(data['input_img'][subset_idx]).float().to(device) / 255.0,
+                'loc': torch.tensor(data['input_loc'][subset_idx]).float().to(device)}
+
+        with torch.no_grad():
+            expert_weights = model.get_expert_weights(context, input)  # (num_samples, num_experts)
         
-        # Average activations across samples for this mu
-        mu_weights = np.array(mu_weights)  # Shape: (num_samples_per_mu, num_experts)
-        mean_weights_heatmap.append(np.mean(mu_weights, axis=0))
-        std_weights_heatmap.append(np.std(mu_weights, axis=0))
+        expert_weights = expert_weights.cpu().numpy()
+        mean_weights_heatmap.append(np.mean(expert_weights, axis=0))  
+        std_weights_heatmap.append(np.std(expert_weights, axis=0))
         
     mean_weights_heatmap, std_weights_heatmap = np.array(mean_weights_heatmap), np.array(std_weights_heatmap)
-    
-    return mean_weights_heatmap, std_weights_heatmap
 
-def analyze_expert_outputs(model):
+    # draw heatmap
+    plt.figure(figsize=(10, 8))
+    plt.imshow(mean_weights_heatmap, cmap='coolwarm', aspect='auto', interpolation='nearest')
+    plt.colorbar(label='Mean Activation')
+    plt.xticks(ticks=np.arange(len(model.experts)), labels=[f'Expert {i+1}' for i in range(len(model.experts))])
+    plt.yticks(ticks=np.arange(len(object_idx)), labels=object_idx)
+    plt.xlabel('Experts')
+    plt.ylabel('Objects')
+    plt.title('Mean Expert Activation Heatmap')
+    plt.tight_layout()
+    plt.savefig('v2/expert_activation_mean_heatmap.png')
+    plt.close()
+
+    plt.figure(figsize=(10, 8))
+    plt.imshow(std_weights_heatmap, cmap='coolwarm', aspect='auto', interpolation='nearest')
+    plt.colorbar(label='Std Activation')
+    plt.xticks(ticks=np.arange(len(model.experts)), labels=[f'Expert {i+1}' for i in range(len(model.experts))])
+    plt.yticks(ticks=np.arange(len(object_idx)), labels=object_idx)
+    plt.xlabel('Experts')
+    plt.ylabel('Objects')
+    plt.title('Std Expert Activation Heatmap')
+    plt.tight_layout()
+    plt.savefig('v2/expert_activation_std_heatmap.png')
+    plt.close()
+
+def analyze_expert_outputs(model, input_img=np.zeros((3, 88, 88))):
     """
-    分析专家输出，在0-1范围采样352*352图像作为输入，生成专家输出热力图
+    分析专家输出，在0-1范围采样88*88图像作为输入，生成专家输出热力图
     """
     print("Analyzing expert outputs heatmap...")
-    
-    model.eval()
-    input_x, input_y = np.linspace(0, 1, 352), np.linspace(0, 1, 352)
-    expert_outputs_heatmap = []
-    
-    
-    return np.array(expert_outputs_heatmap).transpose(1, 0)
+    input_img = torch.tensor(input_img).float()  # (C, H, W)
+    img_gray = input_img.mean(axis=0)  # (H, W)
+    mask = img_gray > -64  # (H, W)
+    input_locs = torch.nonzero(mask, as_tuple=False).to(device)  # (N, 2), 每行是(y, x)
+    input_imgs = input_img.unsqueeze(0).expand(len(input_locs), -1, -1, -1).to(device)  # (N, C, H, W)
+    input = {'img': input_imgs.float() / 255.0, 'loc': input_locs.float() / 88.0}
 
-def analyze_predictions(model, mu_range=(0, 1), num_mu_points=100, num_samples_per_mu=10):
-    """
-    分析模型预测结果：真值为x轴，预测值为y轴
-    Args:
-        model: Trained MoE model
-        mu_range: Range of mu values (min, max)
-        num_mu_points: Number of mu points to sample
-        num_samples_per_mu: Number of samples to generate for each mu value
-    Returns:
-        prediction, ground_truth
-    """
-    print("Analyzing model predictions...")
+    with torch.no_grad():
+        input_feature = model.input_module(input)
+        output_pred = torch.stack([expert(input_feature) for expert in model.experts], dim=0).squeeze(-1)  # (num_experts, N)
     
-    model.eval()
-    mu_values = np.linspace(mu_range[0], mu_range[1], num_mu_points)
-    predictions, ground_truth = [], []
-    
-    for mu in mu_values:
-        sigma = np.random.uniform(0.2, 0.8)
-        for _ in range(num_samples_per_mu):
-            # Generate synthetic data with fixed mu and sigma
-            X = np.random.uniform(0, 1, 5)
-            y = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((X - mu) / sigma) ** 2)
-            context = np.column_stack((X[:4], y[:4])).reshape(-1)
-            input_data = torch.FloatTensor(X[4:]).unsqueeze(0)
-            context_tensor = torch.FloatTensor(context).unsqueeze(0)
+    # draw heatmap
+    n_rows, n_cols = 4, int(np.ceil(len(model.experts) / 4))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
+    axes = axes.flatten()
+    mask = mask.cpu().numpy()
+    for i in range(len(model.experts)):
+        ax = axes[i]
+        empty_img = np.zeros((88, 88))
+        empty_img[mask] = output_pred[i].cpu().numpy()
+        ax.imshow(empty_img, cmap='coolwarm', vmin=0, vmax=1, interpolation='nearest')
+        ax.set_title(f'Expert {i+1}')
+        ax.axis('off')
+    plt.tight_layout()
+    plt.show()
 
-            with torch.no_grad():
-                output = model(context_tensor, input_data).squeeze().item()
-            predictions.append(output)
-            ground_truth.append(y[4])
-    
-    return np.array(predictions), np.array(ground_truth)
+def analyze_expert_predictions(model, data):
+    print("Analyzing expert predictions scatter plot...")
+    context = {'imgs': torch.tensor(data['context_imgs']).float().to(device) / 255.0, 
+               'locs': torch.tensor(data['context_locs']).float().to(device),
+               'dones': torch.tensor(data['context_dones']).float().to(device)}
+    input = {'img': torch.tensor(data['input_img']).float().to(device) / 255.0,
+             'loc': torch.tensor(data['input_loc']).float().to(device)}
+    output_done = torch.tensor(data['output_done']).float().to(device)
 
-def visualize_heatmap(heatmap, save_path=None):
-    """
-    可视化专家激活热力图
-    
-    Args:
-        heatmap: Results from analyze_expert_weights
-        save_path: Path to save the figure
-    """
-    
-    plt.figure(figsize=(12, 8))
-    plt.imshow(heatmap, aspect='auto', cmap='viridis', origin='lower')
-    plt.colorbar(label='Expert Activation')
-    plt.xlabel('Experts')
-    plt.ylabel('Mu Values')
-    plt.title('Expert Activation Heatmap')
-    plt.xticks(ticks=np.arange(heatmap.shape[1]), labels=[f'Expert {i+1}' for i in range(heatmap.shape[1])])
-    plt.yticks(ticks=np.arange(0, heatmap.shape[0], 10), labels=[f'Mu {i+1}' for i in range(0, heatmap.shape[0], 10)])
-    if save_path:
-        plt.savefig(save_path)
+    with torch.no_grad():
+        _, output_pred = model(context, input)
 
-def visualize_predictions(predictions, ground_truth, save_path=None):
-    """
-    可视化模型预测结果
-    
-    Args:
-        predictions: Model predictions
-        ground_truth: Ground truth values
-        save_path: Path to save the figure
-    """
-    
-    plt.figure(figsize=(10, 6))
-    plt.scatter(ground_truth, predictions, alpha=0.5)
-    plt.plot([min(ground_truth), max(ground_truth)], [min(ground_truth), max(ground_truth)], color='red', linestyle='--')
-    plt.xlabel('Ground Truth')
-    plt.ylabel('Predictions')
-    plt.title('Model Predictions vs Ground Truth')
-    if save_path:
-        plt.savefig(save_path)
+    output_pred = output_pred.cpu().numpy()
+    output_done = output_done.cpu().numpy()
+    auroc_score = roc_auc_score(output_done, output_pred)
+
+    # draw histogram of pred, done=true is blue, done=false is red
+    plt.figure(figsize=(8, 6))
+    plt.hist(output_pred[output_done == 1], bins=50, alpha=0.5, color='blue', label='Done = True')
+    plt.hist(output_pred[output_done == 0], bins=50, alpha=0.5, color='red', label='Done = False')
+    plt.xlabel('Predicted Done Value')
+    plt.ylabel('Frequency')
+    plt.title('Histogram of Predicted Done Values, AUROC: {:.4f}'.format(auroc_score))
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('v2/expert_predictions_histogram.png')
+    plt.close()
 
 def main():
     # Example usage
-    model_path = "trained_model_sam_ab1.pth"
-    model_args = (22, 8, 1, 32, 1)  # num_experts, context_size, input_size, hidden_size, output_size
+    model_path = "v2/model_sam.pth"
+    model_args = (4,16)  # num_experts, hidden_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
     
-    model = SaMoEModel_Ab2(*model_args)
+    model = SaMoEModel(*model_args).to(device)
     model.load_state_dict(torch.load(model_path))
+    model.eval()
     
-    mu_range = (0, 1)
-    num_mu_points = 100
-    num_samples_per_mu = 10
-    
-    mean_weights_heatmap, std_weights_heatmap = analyze_expert_weights(model, mu_range, num_mu_points, num_samples_per_mu)
-    expert_outputs_heatmap = analyze_expert_outputs(model, input_range=(0, 1), num_input_points=100)
-    predictions, ground_truth = analyze_predictions(model, mu_range, num_mu_points, num_samples_per_mu)
-    
-    visualize_heatmap(mean_weights_heatmap, save_path="mean_weights_heatmap.png")
-    visualize_heatmap(std_weights_heatmap, save_path="std_weights_heatmap.png")
-    visualize_heatmap(expert_outputs_heatmap, save_path="expert_outputs_heatmap.png")
-    visualize_predictions(predictions, ground_truth, save_path="predictions_vs_ground_truth.png")
+    image_path = 'v2/dataset/t_shape-08231207/attempt_0_rgb.png'
+    image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
+    img = data_generator.load_image(image_path)
+    analyze_expert_outputs(model, img)
+
+    # Load dataset from .npz file
+    data = np.load('v2/dataset.npz')
+    object_idx = [subdir.split('/')[-1] for subdir in os.listdir('./v2/dataset')]
+    analyze_expert_weights(model, object_idx, data)
+    analyze_expert_predictions(model, data)
 
 
 

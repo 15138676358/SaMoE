@@ -51,17 +51,13 @@ def generate_data_for_subdirectory(subdirectory, num_context=4):
     
     return input, context, output
 
-def generate_dataset():
+def generate_dataset(object_idx):
     """Generate dataset from all subdirectories in dataset folder"""
-    dataset_dir = './v2/dataset'
-    if not os.path.exists(dataset_dir):
-        print(f"Dataset directory '{dataset_dir}' not found!")
-        return []
     all_input, all_context, all_output = {'object': [], 'img': [], 'loc': []}, {'imgs': [], 'locs': [], 'dones': []}, {'done': []}
     
     # Process each subdirectory
-    for subdir in os.listdir(dataset_dir):
-        subdir_path = os.path.join(dataset_dir, subdir)
+    for subdir in object_idx:
+        subdir_path = f"./v2/dataset/{subdir}"
         if os.path.isdir(subdir_path):
             print(f"Processing subdirectory: {subdir}")
             input, context, output = generate_data_for_subdirectory(subdir_path)
@@ -77,10 +73,21 @@ def generate_dataset():
 
 if __name__ == "__main__":
     # Generate the complete dataset
-    input, context, output = generate_dataset()
+    dataset_dir = './v2/dataset'
+    object_idx = [subdir for subdir in os.listdir(dataset_dir)]
+    # split the object_idx into 80% train and 20% test
+    random.shuffle(object_idx)
+    train_size = int(0.8 * len(object_idx))
+    train_object_idx = np.random.choice(object_idx, train_size, replace=False)
+    test_object_idx = [obj for obj in object_idx if obj not in train_object_idx]
+    # train_object_idx = object_idx[:-15]
+    # test_object_idx = object_idx[-15:]
+
+    input, context, output = generate_dataset(train_object_idx)
     # 将数据转换为nparray,保存为npz
     np.savez_compressed(
-        'v2/dataset.npz', 
+        'v2/train_dataset.npz', 
+        object=np.array(input['object']),
         input_img=np.array(input['img']),
         input_loc=np.array(input['loc']),
         context_imgs=np.array(context['imgs']),
@@ -89,5 +96,18 @@ if __name__ == "__main__":
         output_done=np.array(output['done'])
     )
 
-    print(f"Generated dataset with {len(output['done'])} entries")
+    print(f"Generated training dataset with {len(output['done'])} entries")
+    
+    input, context, output = generate_dataset(test_object_idx)
+    np.savez_compressed(
+        'v2/test_dataset.npz', 
+        object=np.array(input['object']),
+        input_img=np.array(input['img']),
+        input_loc=np.array(input['loc']),
+        context_imgs=np.array(context['imgs']),
+        context_locs=np.array(context['locs']),
+        context_dones=np.array(context['dones']),
+        output_done=np.array(output['done'])
+    )
+    print(f"Generated testing dataset with {len(output['done'])} entries")
     

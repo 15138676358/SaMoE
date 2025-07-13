@@ -7,7 +7,9 @@ The data structure is as follows:
 The experts and gate network are CNNs, and the baseline network is a flatten network with multiple CNN modules.
 """
 from abc import ABC, abstractmethod
+import copy
 import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 import torch.nn.functional as F
 from typing_extensions import override
@@ -58,17 +60,23 @@ class InputExpert(nn.Module):
     def __init__(self, hidden_size=32):
         super(InputExpert, self).__init__()
         self.img_module = ImgModule(hidden_size)
+        self.img_bn = nn.BatchNorm1d(hidden_size)
         self.loc_module = nn.Sequential(
             nn.Linear(2, hidden_size // 4),  # 2D location to hidden_size // 4
             nn.ReLU(),
-            nn.Linear(hidden_size // 4, hidden_size)  # hidden_size // 4 to hidden_size
+            nn.Dropout(0.1),  # Dropout for regularization
+            nn.Linear(hidden_size // 4, hidden_size),  # hidden_size // 4 to hidden_size
+            nn.Dropout(0.1),
         )
+        self.loc_bn = nn.BatchNorm1d(hidden_size)
         # MLP
         self.decode_module = nn.Sequential(
             nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1),
-            nn.Sigmoid()
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.1),
         )
         # Xavier initialization
         for m in self.modules():
@@ -80,7 +88,9 @@ class InputExpert(nn.Module):
     def forward(self, input):
         img, loc = input['img'], input['loc']
         img_features = self.img_module(img)  # (batch_size, hidden_size)
+        img_features = self.img_bn(img_features)
         loc_features = self.loc_module(loc)  # (batch_size, hidden_size)
+        loc_features = self.loc_bn(loc_features)
         combined_features = torch.cat([img_features, loc_features], dim=1)
         output = self.decode_module(combined_features)
         
@@ -93,8 +103,8 @@ class ContextExpert(nn.Module):
             where each context item contains {img, loc, done}
     - output: torch.FloatTensor(batch_size, hidden_size)
     """
-    def __init__(self, hidden_size=32, num_heads=4, num_layers=2, dropout=0.1, max_seq_len=10):
-        super(ContextExpert, self).__init__()  # 修复：原来错误地调用了InputExpert
+    def __init__(self, hidden_size=32, num_heads=4, num_layers=2, dropout=0.2, max_seq_len=10):
+        super(ContextExpert, self).__init__()
         self.hidden_size = hidden_size
         self.max_seq_len = max_seq_len
         self.img_module = ImgModule(hidden_size)
@@ -199,18 +209,17 @@ class End2EndModel(nn.Module):
     def __init__(self, hidden_size=32):
         super(End2EndModel, self).__init__()
         context = ContextExpert(hidden_size=hidden_size)
+        context_bn = nn.BatchNorm1d(hidden_size)
         input = InputExpert(hidden_size=hidden_size)
-        input.decode_module = nn.Sequential(
-            nn.Linear(hidden_size + hidden_size, hidden_size),
-            nn.ReLU()
-        )  # In this module, the input outputs hidden_size instead of 1
+        input_bn = nn.BatchNorm1d(hidden_size)
         gate = nn.Sequential(
             nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_size, 1),
             nn.Sigmoid()  # Ensure output is in the range [0, 1]
         )
-        self.model = nn.ModuleDict({'context': context, 'input': input, 'gate': gate})
+        self.model = nn.ModuleDict({'context': context, 'context_bn': context_bn, 'input': input, 'input_bn': input_bn, 'gate': gate})
 
         # Xavier initialization
         for m in self.modules():
@@ -221,7 +230,9 @@ class End2EndModel(nn.Module):
 
     def forward(self, context, input):
         context_features = self.model['context'](context)
+        context_features = self.model['context_bn'](context_features)
         input_features = self.model['input'](input)
+        input_features = self.model['input_bn'](input_features)
         combined_features = torch.cat([context_features, input_features], dim=1)
         output = self.model['gate'](combined_features)
 
@@ -233,7 +244,25 @@ class MoEModel(nn.Module):
     """
     def __init__(self, num_experts=4, hidden_size=32):
         super(MoEModel, self).__init__()
-        self.experts = nn.ModuleList([InputExpert(hidden_size) for _ in range(num_experts)])
+        self.input_module = InputExpert(hidden_size)
+        self.experts = nn.ModuleList(
+            nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_size, 1),
+                nn.Sigmoid()
+            ) for _ in range(num_experts)
+        )
+        for expert in self.experts:
+            # Xavier initialization for each expert
+            for m in expert.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+            with torch.no_grad():
+                for param in expert.parameters():
+                    noise = torch.randn_like(param) * 0.1  # 0.1为噪声强度，可调整
+                    param.add_(noise)
 
     @abstractmethod
     def get_expert_weights(self, context, input):
@@ -241,28 +270,28 @@ class MoEModel(nn.Module):
 
     def forward(self, context, input):
         expert_weights = self.get_expert_weights(context, input)  # (batch_size, num_experts)
-        expert_outputs = torch.stack([expert(input) for expert in self.experts], dim=1)  # (batch_size, num_experts, output_size)
+        input_features = self.input_module(input)  # (batch_size, hidden_size)
+        expert_outputs = torch.stack([expert(input_features) for expert in self.experts], dim=1)  # (batch_size, num_experts, output_size)
         combined_output = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
 
-        return combined_output
+        return expert_outputs, combined_output
     
 class MoEModel_Imp(MoEModel):
     @override
     def __init__(self, num_experts=4, hidden_size=32):
         super(MoEModel_Imp, self).__init__(num_experts, hidden_size)
         context = ContextExpert(hidden_size=hidden_size)
+        context_bn = nn.BatchNorm1d(hidden_size)
         input = InputExpert(hidden_size=hidden_size)
-        input.decode_module = nn.Sequential(
-            nn.Linear(hidden_size + hidden_size, hidden_size),
-            nn.ReLU()
-        )  # In this module, the input outputs hidden_size instead of 1
+        input_bn = nn.BatchNorm1d(hidden_size)
         gate = nn.Sequential(
             nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_size, num_experts),
             nn.Softmax(dim=-1)
         )
-        self.expert_weights_gate = nn.ModuleDict({'context': context, 'input': input, 'gate': gate})
+        self.expert_weights_gate = nn.ModuleDict({'context': context, 'context_bn': context_bn, 'input': input, 'input_bn': input_bn, 'gate': gate})
 
         # Xavier initialization
         for m in self.modules():
@@ -274,7 +303,9 @@ class MoEModel_Imp(MoEModel):
     @override
     def get_expert_weights(self, context, input):
         context_features = self.expert_weights_gate['context'](context)
+        context_features = self.expert_weights_gate['context_bn'](context_features)
         input_features = self.expert_weights_gate['input'](input)
+        input_features = self.expert_weights_gate['input_bn'](input_features)
         combined_features = torch.cat([context_features, input_features], dim=1)
         expert_weights = self.expert_weights_gate['gate'](combined_features)
 
@@ -288,6 +319,7 @@ class MoEModel_Exp(MoEModel):
         self.prior_weights_gate.decode_module = nn.Sequential(
             nn.Linear(hidden_size + hidden_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_size, num_experts),
             nn.Softmax(dim=-1)
         )  # In this module, the input outputs num_experts instead of 1
@@ -307,8 +339,9 @@ class MoEModel_Exp(MoEModel):
         C, H, W = imgs.shape[2], imgs.shape[3], imgs.shape[4]
         imgs, locs, dones = imgs.view(batch_size * seq_len, C, H, W), locs.view(batch_size * seq_len, -1), dones.view(batch_size * seq_len, -1)
         context_input, context_output = {'img': imgs, 'loc': locs}, dones
+        context_input_features = self.input_module(context_input)
 
-        expert_predictions = torch.stack([expert(context_input) for expert in self.experts], dim=0)  # (num_experts, batch_size * seq_len, 1)
+        expert_predictions = torch.stack([expert(context_input_features) for expert in self.experts], dim=0)  # (num_experts, batch_size * seq_len, 1)
         context_output = context_output.unsqueeze(0).expand(num_experts, -1, 1)  # (num_experts, batch_size * seq_len, 1)
         expert_errors = (expert_predictions - context_output).view(num_experts, -1, 4).transpose(0, 1)  # (batch_size, num_experts, seq_len)
         
@@ -317,6 +350,94 @@ class MoEModel_Exp(MoEModel):
 
         prior_weights = self.prior_weights_gate(input)
         expert_weights = expert_weights * prior_weights
+        # expert_weights += torch.rand(expert_weights.shape).to(device) * 0.03  # Add small noise for stability
         expert_weights = expert_weights / torch.sum(expert_weights, dim=1, keepdim=True)  # Normalize weights
 
         return expert_weights
+
+class SaMoEModel(MoEModel_Exp):
+    """
+    Specialized MoE model for SaMoE with additional expert evolution capabilities.
+    """
+    def __init__(self, num_experts=4, hidden_size=32):
+        super(SaMoEModel, self).__init__(num_experts, hidden_size)
+        self.expert_trace = torch.ones(num_experts).to(device)  # Initialize with 1 to avoid division by zero
+
+    @override
+    def forward(self, context, input):
+        expert_weights = self.get_expert_weights(context, input)
+        expert_output, combined_output = super().forward(context, input)
+        # Update expert trace based on the frequency of activation
+        with torch.no_grad():
+            self.expert_trace = self.expert_trace + torch.sum(expert_weights, dim=0)
+        
+        return expert_weights, combined_output
+    
+    def evolve_experts(self, threshold=0.1):
+        """
+        Evolve experts based on their frequency of activation.
+        This method can be called periodically to update the experts.
+        """
+        # Step 1: Prune
+        # Calculate expert priority based on frequency
+        expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
+        remove_mask = expert_priority < threshold
+        remove_indices = torch.where(remove_mask)[0].tolist()
+        print(f"Experts to remove (freq < {threshold:.4f}): {remove_indices}")
+        
+        if len(remove_indices) > 0:
+            # Remove experts with low frequency
+            for idx in sorted(remove_indices, reverse=True):
+                del self.experts[idx]
+            self.expert_trace = self.expert_trace[~remove_mask]
+            
+            # 重建gate层
+            old_layer = self.prior_weights_gate.decode_module[3]
+            new_layer = nn.Linear(old_layer.in_features, len(self.experts)).to(device)
+            with torch.no_grad():
+                new_layer.weight.data = old_layer.weight[~remove_mask, :].clone()
+                new_layer.bias.data = old_layer.bias[~remove_mask].clone()
+            self.prior_weights_gate.decode_module[3] = new_layer
+        
+        # Step 2: Add
+        expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
+        add_mask = expert_priority > 1 / max(threshold, 0.001)  # The 1 / threshold
+        add_indices = torch.where(add_mask)[0].tolist()
+        print(f"Experts to add (freq > {(1 / max(threshold, 0.001)):.4f}): {add_indices}")
+        
+        # Get the prior weights from the gate
+        if len(add_indices) > 0:
+            for idx in sorted(add_indices, reverse=True):
+                # Create a new expert by copying an existing one
+                new_expert = copy.deepcopy(self.experts[idx])
+                with torch.no_grad():
+                    for param in new_expert.parameters():
+                        noise = torch.randn_like(param) * 0.1
+                        param.add_(noise)
+                self.experts.append(new_expert)
+                # Update the expert trace
+                self.expert_trace[idx] /= 2
+                self.expert_trace = torch.cat([self.expert_trace, self.expert_trace[idx:idx+1]])
+                
+            
+            # 重建gate层以容纳新专家
+            old_layer = self.prior_weights_gate.decode_module[3]
+            new_layer = nn.Linear(old_layer.in_features, len(self.experts)).to(device)
+            
+            with torch.no_grad():
+                # 复制现有权重
+                new_layer.weight.data[:old_layer.out_features] = old_layer.weight.data
+                new_layer.bias.data[:old_layer.out_features] = old_layer.bias.data
+                
+                # 为新专家添加权重（复制来源专家的权重）
+                start_idx = old_layer.out_features
+                for i, source_idx in enumerate(add_indices):
+                    new_layer.weight.data[start_idx + i] = old_layer.weight.data[source_idx]
+                    new_layer.bias.data[start_idx + i] = old_layer.bias.data[source_idx]
+            
+            self.prior_weights_gate.decode_module[3] = new_layer
+  
+        # Update and print the priority
+        expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
+        # print(f"Updated expert frequencies: {expert_priority.detach()}")
+        self.expert_trace = torch.ones(len(self.experts)).to(device)  # Reset expert trace after evolution
