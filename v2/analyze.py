@@ -85,6 +85,7 @@ def analyze_expert_outputs(model, input_img=np.zeros((3, 88, 88))):
         input_feature = model.input_module(input)
         output_pred = torch.stack([expert(input_feature) for expert in model.experts], dim=0).squeeze(-1)  # (num_experts, N)
     
+    # output_pred = input_feature.transpose(0, 1)  # Debug: draw the feature map of input module
     # draw heatmap
     n_rows, n_cols = 4, int(np.ceil(len(model.experts) / 4))
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(2*n_cols, 2*n_rows))
@@ -110,7 +111,11 @@ def analyze_expert_predictions(model, data):
     output_done = torch.tensor(data['output_done']).float().to(device)
 
     with torch.no_grad():
-        _, output_pred = model(context, input)
+        if isinstance(model, End2EndModel):
+            output_pred = model(context, input)
+        else:
+            expert_weights, expert_outputs = model(context, input)
+            output_pred = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
 
     output_pred = output_pred.cpu().numpy()
     output_done = output_done.cpu().numpy()
@@ -141,7 +146,7 @@ def main():
     model.eval()
     
     image_path = 'v2/dataset/t_shape-08231207/attempt_0_rgb.png'
-    # image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
+    image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
     img = data_generator.load_image(image_path)
     analyze_expert_outputs(model, img)
 

@@ -30,7 +30,7 @@ def generate_data_for_subdirectory(subdirectory, num_context=4):
     
     # Get all attempt files
     attempt_idx = []
-    for file in os.listdir(subdirectory):
+    for file in sorted(os.listdir(subdirectory)):
         if file.startswith('attempt_') and file.endswith('_rgb.png'):
             attempt_id = file.split('_')[1]
             attempt_idx.append(attempt_id)
@@ -74,7 +74,7 @@ def generate_dataset(object_idx):
 if __name__ == "__main__":
     # Generate the complete dataset
     dataset_dir = './v2/dataset'
-    object_idx = [subdir for subdir in os.listdir(dataset_dir)]
+    object_idx = sorted([subdir for subdir in os.listdir(dataset_dir)])
     # split the object_idx into 80% train and 20% test
     random.shuffle(object_idx)
     train_size = int(0.8 * len(object_idx))

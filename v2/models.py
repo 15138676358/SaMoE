@@ -62,10 +62,10 @@ class InputExpert(nn.Module):
         self.img_module = ImgModule(hidden_size)
         self.img_bn = nn.BatchNorm1d(hidden_size)
         self.loc_module = nn.Sequential(
-            nn.Linear(2, hidden_size // 4),  # 2D location to hidden_size // 4
+            nn.Linear(2, hidden_size),  # 2D location to hidden_size
             nn.ReLU(),
             nn.Dropout(0.1),  # Dropout for regularization
-            nn.Linear(hidden_size // 4, hidden_size),  # hidden_size // 4 to hidden_size
+            nn.Linear(hidden_size, hidden_size),  # hidden_size to hidden_size
             nn.Dropout(0.1),
         )
         self.loc_bn = nn.BatchNorm1d(hidden_size)
@@ -75,7 +75,7 @@ class InputExpert(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.Sigmoid(),
             nn.Dropout(0.1),
         )
         # Xavier initialization
@@ -236,7 +236,7 @@ class End2EndModel(nn.Module):
         combined_features = torch.cat([context_features, input_features], dim=1)
         output = self.model['gate'](combined_features)
 
-        return None, output
+        return output
     
 class MoEModel(nn.Module):
     """
@@ -247,6 +247,9 @@ class MoEModel(nn.Module):
         self.input_module = InputExpert(hidden_size)
         self.experts = nn.ModuleList(
             nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Dropout(0.1),
                 nn.Linear(hidden_size, hidden_size),
                 nn.ReLU(),
                 nn.Dropout(0.1),
@@ -341,10 +344,11 @@ class MoEModel_Exp(MoEModel):
         context_input, context_output = {'img': imgs, 'loc': locs}, dones
         context_input_features = self.input_module(context_input)
 
-        expert_predictions = torch.stack([expert(context_input_features) for expert in self.experts], dim=0)  # (num_experts, batch_size * seq_len, 1)
-        context_output = context_output.unsqueeze(0).expand(num_experts, -1, 1)  # (num_experts, batch_size * seq_len, 1)
-        expert_errors = (expert_predictions - context_output).view(num_experts, -1, 4).transpose(0, 1)  # (batch_size, num_experts, seq_len)
-        
+        expert_predictions = torch.stack([expert(context_input_features) for expert in self.experts], dim=0).view(num_experts, -1, seq_len).transpose(0, 1)  # (batch_size, num_experts, seq_len)
+        context_output = context_output.unsqueeze(0).expand(num_experts, -1, 1).view(num_experts, -1, seq_len).transpose(0, 1)  # (batch_size, num_experts, seq_len)
+        # expert_likelyhood = context_output * torch.log(expert_predictions + 1e-8) + (1 - context_output) * torch.log(1 - expert_predictions + 1e-8)  # (batch_size, num_experts, seq_len)
+        # expert_errors = -torch.sum(expert_likelyhood, dim=2)  # (batch_size, num_experts)
+        expert_errors = expert_predictions - context_output  # (batch_size, num_experts, seq_len)
         expert_errors = torch.sum(torch.pow(expert_errors, 2), dim=2)  # (batch_size, num_experts)
         expert_weights = F.softmax(-expert_errors, dim=1)  # (batch_size, num_experts)
 
@@ -412,7 +416,7 @@ class SaMoEModel(MoEModel_Exp):
                 new_expert = copy.deepcopy(self.experts[idx])
                 with torch.no_grad():
                     for param in new_expert.parameters():
-                        noise = torch.randn_like(param) * 0.1
+                        noise = torch.randn_like(param) * 0.5
                         param.add_(noise)
                 self.experts.append(new_expert)
                 # Update the expert trace
@@ -439,5 +443,5 @@ class SaMoEModel(MoEModel_Exp):
   
         # Update and print the priority
         expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
-        # print(f"Updated expert frequencies: {expert_priority.detach()}")
+        print(f"Updated expert frequencies: {expert_priority.detach()}")
         self.expert_trace = torch.ones(len(self.experts)).to(device)  # Reset expert trace after evolution
