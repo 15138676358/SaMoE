@@ -151,9 +151,9 @@ def main():
     analyze_expert_outputs(model, img)
 
     # Load dataset from .npz file
-    data = np.load('v2/test_dataset.npz')
+    data = np.load('v2/dataset.npz')
     object_idx = sorted([subdir for subdir in os.listdir('./v2/dataset')])
-    # analyze_expert_weights(model, object_idx, data)
+    analyze_expert_weights(model, object_idx, data)
     analyze_expert_predictions(model, data)
 
 
