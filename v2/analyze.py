@@ -36,7 +36,7 @@ def analyze_expert_weights(model, object_idx, data):
                 'loc': torch.tensor(data['input_loc'][subset_idx]).float().to(device)}
 
         with torch.no_grad():
-            expert_weights = model.get_expert_weights(context, input)  # (num_samples, num_experts)
+            expert_weights, expert_outputs = model(context, input)
         
         expert_weights = expert_weights.cpu().numpy()
         mean_weights_heatmap.append(np.mean(expert_weights, axis=0))  
@@ -136,7 +136,7 @@ def analyze_expert_predictions(model, data):
 def main():
     # Example usage
     model_path = "v2/model_sam.pth"
-    model_args = (16,16)  # num_experts, hidden_size
+    model_args = (13,16)  # num_experts, hidden_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
@@ -146,14 +146,14 @@ def main():
     model.eval()
     
     image_path = 'v2/dataset/t_shape-08231207/attempt_0_rgb.png'
-    image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
+    # image_path = 'v2/dataset/long_l_shape-08272053/attempt_0_rgb.png'
     img = data_generator.load_image(image_path)
     analyze_expert_outputs(model, img)
 
     # Load dataset from .npz file
-    data = np.load('v2/dataset.npz')
-    object_idx = [subdir.split('/')[-1] for subdir in os.listdir('./v2/dataset')]
-    analyze_expert_weights(model, object_idx, data)
+    data = np.load('v2/test_dataset.npz')
+    object_idx = sorted([subdir for subdir in os.listdir('./v2/dataset')])
+    # analyze_expert_weights(model, object_idx, data)
     analyze_expert_predictions(model, data)
 
 

@@ -76,12 +76,11 @@ if __name__ == "__main__":
     dataset_dir = './v2/dataset'
     object_idx = sorted([subdir for subdir in os.listdir(dataset_dir)])
     # split the object_idx into 80% train and 20% test
-    random.shuffle(object_idx)
-    train_size = int(0.8 * len(object_idx))
-    train_object_idx = np.random.choice(object_idx, train_size, replace=False)
-    test_object_idx = [obj for obj in object_idx if obj not in train_object_idx]
-    # train_object_idx = object_idx[:-15]
-    # test_object_idx = object_idx[-15:]
+    # train_size = int(0.8 * len(object_idx))
+    # train_object_idx = np.random.choice(object_idx, train_size, replace=False)
+    # test_object_idx = [obj for obj in object_idx if obj not in train_object_idx]
+    train_object_idx = object_idx[:-15]
+    test_object_idx = object_idx[-15:]
 
     input, context, output = generate_dataset(train_object_idx)
     # 将数据转换为nparray,保存为npz

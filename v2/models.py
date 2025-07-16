@@ -337,10 +337,10 @@ class MoEModel_Exp(MoEModel):
     @override
     def get_expert_weights(self, context, input):
         num_experts = len(self.experts)
-        imgs, locs, dones = context['imgs'], context['locs'], context['dones']
+        imgs, locs, dones = context['imgs'][:,:], context['locs'][:,:], context['dones'][:,:]
         batch_size, seq_len = imgs.shape[0], imgs.shape[1]
         C, H, W = imgs.shape[2], imgs.shape[3], imgs.shape[4]
-        imgs, locs, dones = imgs.view(batch_size * seq_len, C, H, W), locs.view(batch_size * seq_len, -1), dones.view(batch_size * seq_len, -1)
+        imgs, locs, dones = imgs.reshape(batch_size * seq_len, C, H, W), locs.reshape(batch_size * seq_len, -1), dones.reshape(batch_size * seq_len, -1)
         context_input, context_output = {'img': imgs, 'loc': locs}, dones
         context_input_features = self.input_module(context_input)
 
@@ -444,4 +444,4 @@ class SaMoEModel(MoEModel_Exp):
         # Update and print the priority
         expert_priority = len(self.experts) * self.expert_trace / torch.sum(self.expert_trace)
         print(f"Updated expert frequencies: {expert_priority.detach()}")
-        self.expert_trace = torch.ones(len(self.experts)).to(device)  # Reset expert trace after evolution
+        # self.expert_trace = torch.ones(len(self.experts)).to(device)  # Reset expert trace after evolution

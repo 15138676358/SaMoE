@@ -42,14 +42,26 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
             # expert_entropy = -torch.min(gaps, dim=1)[0].mean()  # Regularization term for expert entropy
             # weight_entropy = -torch.max(expert_weights, dim=1)[0].mean()
 
-            # expert_errors = torch.pow(expert_outputs - output_done.unsqueeze(1).repeat(1, len(model.experts), 1), 2)  # (batch_size, num_experts)
-            # expert_errors = F.softmax(-expert_errors, dim=1).squeeze(-1)
-            # expert_consistency = torch.sum(torch.pow(expert_weights - expert_errors, 2), dim=1).mean()  # Regularization term for expert consistency
+            expert_errors = torch.pow(expert_outputs - output_done.unsqueeze(1).repeat(1, len(model.experts), 1), 2)  # (batch_size, num_experts)
+            expert_errors = F.softmax(-expert_errors, dim=1).squeeze(-1)
+            batch_expert_consistency = -torch.pow(expert_weights - expert_errors, 2)  # Regularization term for expert consistency
+            batch_expert_consistency = F.softmax(batch_expert_consistency, dim=1)  # Normalize to sum to 1
+            # batch_data_weights = F.softmax(batch_expert_consistency.detach(), dim=0)  # Normalize to sum to 1
+
+            # output_done = batch_data_weights * output_done
+            # combined_output = batch_data_weights * combined_output
+            # if max(batch_data_weights) < 0.3 / batch_data_weights.size(0):
+            #     print("Some data has been addressed properly: ", batch_data_weights)
 
             loss = 1.0 * criterion(combined_output, output_done) 
-            # + 5.0 * expert_entropy 
-            # + 1.0 * expert_consistency
-            # + 0.2 * weight_entropy  
+            - 1.0 * torch.std(batch_expert_consistency, dim=1)  # Regularization term for expert standard deviation
+            - 1.0 * torch.std(batch_expert_consistency, dim=0)
+            # + 5.0 * expert_entropy
+            - 0.3 * batch_expert_consistency.max(dim=1)[0].mean()
+            + 0.3 * batch_expert_consistency.min(dim=1)[0].mean()
+            - 0.3 * batch_expert_consistency.max(dim=0)[0].mean()
+            + 0.3 * batch_expert_consistency.min(dim=0)[0].mean()
+            # + 0.2 * weight_entropy
             # Add entropy regularization
 
         loss.backward()
@@ -100,7 +112,7 @@ def train(model, train_dataset, test_dataset, batch_size=32, num_epochs=100, lea
 
         if isinstance(model, SaMoEModel):
             current_num_experts = len(model.experts)
-            model.evolve_experts(threshold=min(epoch / num_epochs, 0.3))
+            model.evolve_experts(threshold=min(epoch / num_epochs, 0.4))
 
             # 检查是否需要更新optimizer
             if len(model.experts) != current_num_experts:
@@ -136,7 +148,7 @@ def main():
     # model = MoEModel_Exp(num_experts=16, hidden_size=16)
     model = SaMoEModel(num_experts=16, hidden_size=16)
     print("Model initialized.")
-    train(model, train_dataset, test_dataset, batch_size=8, num_epochs=25, learning_rate=0.001)
+    train(model, train_dataset, test_dataset, batch_size=16, num_epochs=25, learning_rate=0.001)
 
     # Save the trained model
     torch.save(model.state_dict(), 'v2/model_sam.pth')
