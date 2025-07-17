@@ -42,10 +42,13 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
             # expert_entropy = -torch.min(gaps, dim=1)[0].mean()  # Regularization term for expert entropy
             # weight_entropy = -torch.max(expert_weights, dim=1)[0].mean()
 
-            expert_errors = torch.pow(expert_outputs - output_done.unsqueeze(1).repeat(1, len(model.experts), 1), 2)  # (batch_size, num_experts)
-            expert_errors = F.softmax(-expert_errors, dim=1).squeeze(-1)
-            batch_expert_consistency = -torch.pow(expert_weights - expert_errors, 2)  # Regularization term for expert consistency
-            batch_expert_consistency = F.softmax(batch_expert_consistency, dim=1)  # Normalize to sum to 1
+            expert_accuracy = F.softmax(-torch.pow(expert_outputs - output_done.unsqueeze(1).repeat(1, len(model.experts), 1), 2), dim=1)  # (batch_size, num_experts)
+            accuracy_e = torch.transpose_copy(expert_accuracy.squeeze(-1), 0, 1)
+            feats_e = accuracy_e - accuracy_e.mean(dim=1, keepdim=True)
+            feats_e = feats_e / (feats_e.std(dim=1, keepdim=True) + 1e-8)
+            # expert_errors = F.softmax(-expert_errors, dim=1).squeeze(-1)
+            # batch_expert_consistency = -torch.pow(expert_weights - expert_errors, 2)  # Regularization term for expert consistency
+            # batch_expert_consistency = F.softmax(batch_expert_consistency, dim=1)  # Normalize to sum to 1
             # batch_data_weights = F.softmax(batch_expert_consistency.detach(), dim=0)  # Normalize to sum to 1
 
             # output_done = batch_data_weights * output_done
@@ -53,14 +56,26 @@ def train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer
             # if max(batch_data_weights) < 0.3 / batch_data_weights.size(0):
             #     print("Some data has been addressed properly: ", batch_data_weights)
 
+            weights_t = torch.transpose_copy(expert_weights, 0, 1)
+            feats_w = weights_t - weights_t.mean(dim=1, keepdim=True)
+            feats_w = feats_w / (feats_w.std(dim=1, keepdim=True) + 1e-8)
+            corr_matrix = torch.matmul(feats_w, feats_w.T) / feats_w.shape[1]  # shape: (num_experts, num_experts)
+            # 只关注非对角线元素（即不同expert之间的相关性）
+            mask_w = ~torch.eye(corr_matrix.size(0), dtype=torch.bool, device=corr_matrix.device)
+            mean_corr = corr_matrix[mask_w].mean()
+            max_corr = corr_matrix[mask_w].max()
+
+            cons_matrix = torch.matmul(feats_e, feats_w.T) / feats_w.shape[1]
+            mask_e = torch.eye(corr_matrix.size(0), dtype=torch.bool, device=corr_matrix.device)
+            
             loss = 1.0 * criterion(combined_output, output_done) 
-            - 1.0 * torch.std(batch_expert_consistency, dim=1)  # Regularization term for expert standard deviation
-            - 1.0 * torch.std(batch_expert_consistency, dim=0)
+            + 5.0 * corr_matrix[mask_w].mean()
+            # - 0.5 * torch.max(expert_weights, dim=1)[0].mean()
             # + 5.0 * expert_entropy
-            - 0.3 * batch_expert_consistency.max(dim=1)[0].mean()
-            + 0.3 * batch_expert_consistency.min(dim=1)[0].mean()
-            - 0.3 * batch_expert_consistency.max(dim=0)[0].mean()
-            + 0.3 * batch_expert_consistency.min(dim=0)[0].mean()
+            - 5.0 * cons_matrix[mask_e].mean()
+            # + 0.3 * batch_expert_consistency.min(dim=1)[0].mean()
+            # - 0.3 * batch_expert_consistency.max(dim=0)[0].mean()
+            # + 0.3 * batch_expert_consistency.min(dim=0)[0].mean()
             # + 0.2 * weight_entropy
             # Add entropy regularization
 
@@ -104,7 +119,7 @@ def train(model, train_dataset, test_dataset, batch_size=32, num_epochs=100, lea
     test_data_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False)
     
     criterion = torch.nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     for epoch in tqdm(range(num_epochs), desc="Training Epochs"):
         train_loss, test_loss = train_epoch(model, train_data_loader, test_data_loader, criterion, optimizer)
@@ -112,7 +127,7 @@ def train(model, train_dataset, test_dataset, batch_size=32, num_epochs=100, lea
 
         if isinstance(model, SaMoEModel):
             current_num_experts = len(model.experts)
-            model.evolve_experts(threshold=min(epoch / num_epochs, 0.4))
+            model.evolve_experts(threshold=min(epoch / num_epochs, 0.25))
 
             # 检查是否需要更新optimizer
             if len(model.experts) != current_num_experts:
@@ -146,7 +161,7 @@ def main():
     # Train the model
     # model = End2EndModel(hidden_size=32)
     # model = MoEModel_Exp(num_experts=16, hidden_size=16)
-    model = SaMoEModel(num_experts=16, hidden_size=16)
+    model = SaMoEModel(num_experts=16, hidden_size=32)
     print("Model initialized.")
     train(model, train_dataset, test_dataset, batch_size=16, num_epochs=25, learning_rate=0.001)
 

@@ -13,6 +13,7 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 from PIL import Image
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from sklearn.metrics import roc_auc_score
@@ -26,6 +27,7 @@ def analyze_expert_weights(model, object_idx, data):
     print("Analyzing expert activation heatmap...")
     
     mean_weights_heatmap, std_weights_heatmap = [], []
+    consistency_heatmap = []
 
     for object_id in tqdm(object_idx, desc="Analyzing objects"):
         subset_idx = [i for i, obj in enumerate(data['object']) if obj == object_id]
@@ -34,39 +36,79 @@ def analyze_expert_weights(model, object_idx, data):
                    'dones': torch.tensor(data['context_dones'][subset_idx]).float().to(device)}
         input = {'img': torch.tensor(data['input_img'][subset_idx]).float().to(device) / 255.0,
                 'loc': torch.tensor(data['input_loc'][subset_idx]).float().to(device)}
+        output_done = torch.tensor(data['output_done'][subset_idx]).float().to(device)
 
         with torch.no_grad():
             expert_weights, expert_outputs = model(context, input)
+            expert_accuracy = F.softmax(-torch.pow(expert_outputs - output_done.unsqueeze(1).repeat(1, len(model.experts), 1), 2), dim=1)  # (batch_size, num_experts)
+            accuracy_e = torch.transpose_copy(expert_accuracy.squeeze(-1), 0, 1)
+            feats_e = accuracy_e - accuracy_e.mean(dim=1, keepdim=True)
+            feats_e = feats_e / (feats_e.std(dim=1, keepdim=True) + 1e-8)
+            weights_t = torch.transpose_copy(expert_weights, 0, 1)
+            feats_w = weights_t - weights_t.mean(dim=1, keepdim=True)
+            feats_w = feats_w / (feats_w.std(dim=1, keepdim=True) + 1e-8)
+            consistency_matrix = torch.matmul(feats_e, feats_w.T) / feats_w.shape[1]
+            mask_e = torch.eye(consistency_matrix.size(0), dtype=torch.bool, device=consistency_matrix.device)
         
         expert_weights = expert_weights.cpu().numpy()
         mean_weights_heatmap.append(np.mean(expert_weights, axis=0))  
         std_weights_heatmap.append(np.std(expert_weights, axis=0))
+        expert_consistency = consistency_matrix[mask_e].flatten().cpu().numpy()
+        consistency_heatmap.append(expert_consistency)
+
         
-    mean_weights_heatmap, std_weights_heatmap = np.array(mean_weights_heatmap), np.array(std_weights_heatmap)
+    mean_weights_heatmap, std_weights_heatmap, consistency_heatmap = np.array(mean_weights_heatmap), np.array(std_weights_heatmap), np.array(consistency_heatmap)
 
     # draw heatmap
-    plt.figure(figsize=(10, 8))
-    plt.imshow(mean_weights_heatmap, cmap='coolwarm', aspect='auto', interpolation='nearest')
-    plt.colorbar(label='Mean Activation')
-    plt.xticks(ticks=np.arange(len(model.experts)), labels=[f'Expert {i+1}' for i in range(len(model.experts))])
-    plt.yticks(ticks=np.arange(len(object_idx)), labels=object_idx)
-    plt.xlabel('Experts')
-    plt.ylabel('Objects')
-    plt.title('Mean Expert Activation Heatmap')
-    plt.tight_layout()
-    plt.savefig('v2/expert_activation_mean_heatmap.png')
-    plt.close()
+    for heatmap, title, filename in zip(
+        [mean_weights_heatmap, std_weights_heatmap, consistency_heatmap],
+        ['Mean Expert Activation', 'Std Expert Activation', 'Expert Consistency'],
+        ['expert_activation_mean_heatmap.png', 'expert_activation_std_heatmap.png', 'expert_consistency_heatmap.png']
+    ):
+        plt.figure(figsize=(10, 8))
+        plt.imshow(heatmap, cmap='coolwarm', aspect='auto', interpolation='nearest')
+        plt.colorbar(label='Activation Value')
+        plt.xticks(ticks=np.arange(len(model.experts)), labels=[f'Expert {i+1}' for i in range(len(model.experts))])
+        plt.yticks(ticks=np.arange(len(object_idx)), labels=object_idx)
+        plt.xlabel('Experts')
+        plt.ylabel('Objects')
+        plt.title(title)
+        plt.tight_layout()
+        plt.savefig(f'v2/{filename}')
+        plt.close()
 
-    plt.figure(figsize=(10, 8))
-    plt.imshow(std_weights_heatmap, cmap='coolwarm', aspect='auto', interpolation='nearest')
-    plt.colorbar(label='Std Activation')
+def analyze_expert_variability(model, data):
+    print("Analyzing expert predictions scatter plot...")
+    context = {'imgs': torch.tensor(data['context_imgs']).float().to(device) / 255.0, 
+               'locs': torch.tensor(data['context_locs']).float().to(device),
+               'dones': torch.tensor(data['context_dones']).float().to(device)}
+    input = {'img': torch.tensor(data['input_img']).float().to(device) / 255.0,
+             'loc': torch.tensor(data['input_loc']).float().to(device)}
+    output_done = torch.tensor(data['output_done']).float().to(device)
+
+    with torch.no_grad():
+        if isinstance(model, End2EndModel):
+            output_pred = model(context, input)
+        else:
+            expert_weights, expert_outputs = model(context, input)
+            output_pred = torch.sum(expert_weights.unsqueeze(2) * expert_outputs, dim=1)
+            weights_t = torch.transpose_copy(expert_weights, 0, 1)
+            feats_w = weights_t - weights_t.mean(dim=1, keepdim=True)
+            feats_w = feats_w / (feats_w.std(dim=1, keepdim=True) + 1e-8)
+            corr_matrix = torch.matmul(feats_w, feats_w.T) / feats_w.shape[1]  # shape: (num_experts, num_experts)
+
+    corr_matrix = corr_matrix.cpu().numpy()
+    # draw heatmap
+    plt.figure(figsize=(8, 6))
+    plt.imshow(corr_matrix, cmap='coolwarm', vmin=-1, vmax=1, interpolation='nearest')
+    plt.colorbar(label='Correlation Coefficient')
     plt.xticks(ticks=np.arange(len(model.experts)), labels=[f'Expert {i+1}' for i in range(len(model.experts))])
-    plt.yticks(ticks=np.arange(len(object_idx)), labels=object_idx)
+    plt.yticks(ticks=np.arange(len(model.experts)), labels=[f'Expert {i+1}' for i in range(len(model.experts))])
     plt.xlabel('Experts')
-    plt.ylabel('Objects')
-    plt.title('Std Expert Activation Heatmap')
+    plt.ylabel('Experts')
+    plt.title('Expert Correlation Matrix')
     plt.tight_layout()
-    plt.savefig('v2/expert_activation_std_heatmap.png')
+    plt.savefig('v2/expert_correlation_heatmap.png')
     plt.close()
 
 def analyze_expert_outputs(model, input_img=np.zeros((3, 88, 88))):
@@ -136,7 +178,7 @@ def analyze_expert_predictions(model, data):
 def main():
     # Example usage
     model_path = "v2/model_sam.pth"
-    model_args = (13,16)  # num_experts, hidden_size
+    model_args = (15,32)  # num_experts, hidden_size
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file {model_path} not found. Please train a model first.")
@@ -154,6 +196,7 @@ def main():
     data = np.load('v2/dataset.npz')
     object_idx = sorted([subdir for subdir in os.listdir('./v2/dataset')])
     analyze_expert_weights(model, object_idx, data)
+    analyze_expert_variability(model, data)
     analyze_expert_predictions(model, data)
 
 
